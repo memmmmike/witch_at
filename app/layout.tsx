@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Space_Grotesk, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -14,9 +14,20 @@ const jetbrainsMono = JetBrains_Mono({
   display: "swap",
 });
 
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  themeColor: "#0c090d",
+};
+
 export const metadata: Metadata = {
   title: "Witchat — Ephemeral Stream",
   description: "Digital orality. The stream, not the archive.",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "witch@",
+  },
 };
 
 export default function RootLayout({

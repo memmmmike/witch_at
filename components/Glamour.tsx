@@ -55,8 +55,8 @@ export function Glamour() {
   const sigil = identity?.sigil ?? null;
 
   return (
-    <div className="absolute top-4 right-4 flex items-center gap-3">
-      <div className="flex items-center gap-2">
+    <div className="absolute top-2 right-2 sm:top-4 sm:right-4 flex items-center gap-2 sm:gap-3">
+      <div className="hidden sm:flex items-center gap-2">
         <span
           className="inline-block w-4 h-4 rounded-full border border-white/10 shrink-0"
           style={{ backgroundColor: color }}
@@ -78,10 +78,15 @@ export function Glamour() {
           </span>
         )}
       </div>
+      <span
+        className="sm:hidden inline-block w-4 h-4 rounded-full border border-white/10 shrink-0"
+        style={{ backgroundColor: color }}
+        title="Your aura"
+      />
       <button
         type="button"
         onClick={toggleSound}
-        className="text-xs text-witch-sage-500/70 hover:text-witch-plum-400/90"
+        className="text-sm sm:text-xs text-witch-sage-500/70 hover:text-witch-plum-400/90 p-1"
         title={soundOn ? "Sound on" : "Sound off"}
       >
         {soundOn ? "🔔" : "🔕"}
@@ -89,13 +94,14 @@ export function Glamour() {
       <button
         type="button"
         onClick={() => setRevealOpen((o) => !o)}
-        className="text-xs text-witch-amber-400/90 hover:text-witch-amber-400 border border-witch-amber-500/40 hover:border-witch-amber-500/60 rounded px-2 py-1 transition-colors"
+        className="text-xs text-witch-amber-400/90 hover:text-witch-amber-400 border border-witch-amber-500/40 hover:border-witch-amber-500/60 rounded px-2 py-1.5 sm:py-1 transition-colors"
         title={revealOpen ? "Close panel" : handle || tag ? "Edit identity" : "Set handle, tag, sigil"}
       >
-        {revealOpen ? "Close" : handle || tag ? "Edit Identity" : "Reveal Identity"}
+        {revealOpen ? "×" : <span className="hidden sm:inline">{handle || tag ? "Edit Identity" : "Reveal Identity"}</span>}
+        {!revealOpen && <span className="sm:hidden">ID</span>}
       </button>
       {revealOpen && (
-        <div className="absolute top-full right-0 mt-2 glass rounded-lg p-3 border border-witch-plum-900/40 flex flex-col gap-2 min-w-[200px]">
+        <div className="fixed sm:absolute inset-4 sm:inset-auto sm:top-full sm:right-0 sm:mt-2 glass rounded-lg p-4 sm:p-3 border border-witch-plum-900/40 flex flex-col gap-3 sm:gap-2 sm:min-w-[200px] z-50">
           <input
             type="text"
             value={handleInput}

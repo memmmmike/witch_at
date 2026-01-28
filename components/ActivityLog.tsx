@@ -25,14 +25,15 @@ export function ActivityLog() {
   const [isOpen, setIsOpen] = useState(false);
 
   return (
-    <div className="absolute bottom-4 left-4 z-20">
+    <div className="absolute bottom-2 left-2 sm:bottom-4 sm:left-4 z-20">
       <button
         type="button"
         onClick={() => setIsOpen((o) => !o)}
-        className="text-xs text-witch-sage-500/70 hover:text-witch-plum-400/90 border border-witch-plum-900/40 hover:border-witch-plum-700/50 rounded px-2 py-1 transition-colors glass"
+        className="text-xs text-witch-sage-500/70 hover:text-witch-plum-400/90 border border-witch-plum-900/40 hover:border-witch-plum-700/50 rounded px-2 py-1.5 sm:py-1 transition-colors glass"
         title={isOpen ? "Close activity log" : "Open activity log"}
       >
-        {isOpen ? "Close Log" : `Activity${activityLog.length > 0 ? ` (${activityLog.length})` : ""}`}
+        <span className="hidden sm:inline">{isOpen ? "Close Log" : `Activity${activityLog.length > 0 ? ` (${activityLog.length})` : ""}`}</span>
+        <span className="sm:hidden">{isOpen ? "×" : `${activityLog.length > 0 ? activityLog.length : "○"}`}</span>
       </button>
 
       <AnimatePresence>
@@ -42,7 +43,7 @@ export function ActivityLog() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 8, scale: 0.95 }}
             transition={{ duration: 0.15 }}
-            className="absolute bottom-full left-0 mb-2 w-64 max-h-60 overflow-y-auto glass rounded-lg border border-witch-plum-900/40 p-2"
+            className="fixed sm:absolute inset-4 sm:inset-auto sm:bottom-full sm:left-0 sm:mb-2 sm:w-64 max-h-[70vh] sm:max-h-60 overflow-y-auto glass rounded-lg border border-witch-plum-900/40 p-3 sm:p-2"
           >
             {activityLog.length === 0 ? (
               <p className="text-xs text-witch-sage-500/50 italic text-center py-2">

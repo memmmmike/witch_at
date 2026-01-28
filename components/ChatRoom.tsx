@@ -97,23 +97,24 @@ export function ChatRoom() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-6 relative">
+    <div className="min-h-screen flex flex-col items-center justify-center p-3 sm:p-6 relative">
       <Glamour />
       <ActivityLog />
       <ContextualHints />
       <Logo />
-      <div className="absolute top-4 left-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-witch-sage-500/80">
+      <div className="absolute top-2 left-2 sm:top-4 sm:left-4 flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-1 text-[10px] sm:text-xs text-witch-sage-500/80 max-w-[60%] sm:max-w-none">
         <span className="font-medium text-witch-plum-400/90">{roomTitle}</span>
-        <span className="text-witch-sage-500/50">·</span>
-        <span className="flex items-center gap-2">
+        <span className="text-witch-sage-500/50 hidden sm:inline">·</span>
+        <span className="flex items-center gap-1 sm:gap-2">
           <span className={`w-2 h-2 rounded-full ${connected ? "bg-witch-forest-500/90" : "bg-rose-600/70"}`} />
-          {connected ? "Connected" : "Connecting…"}
+          <span className="hidden sm:inline">{connected ? "Connected" : "Connecting…"}</span>
         </span>
-        <span className="text-witch-sage-500/50">·</span>
-        <span title="People in the stream">{presence} in the stream</span>
-        <span className="text-witch-sage-500/50">·</span>
+        <span className="text-witch-sage-500/50 hidden sm:inline">·</span>
+        <span title="People in the stream" className="hidden sm:inline">{presence} in the stream</span>
+        <span className="sm:hidden">{presence}</span>
+        <span className="text-witch-sage-500/50 hidden sm:inline">·</span>
         <span
-          className="capitalize"
+          className="capitalize hidden sm:inline"
           title="Context Engine: background shifts with conversation tone"
         >
           {mood === "calm" && "Calm"}
@@ -439,7 +440,7 @@ const MessageInput = React.forwardRef<
   };
 
   return (
-    <div className="w-full max-w-lg mt-6 flex gap-2">
+    <div className="w-full max-w-lg mt-4 sm:mt-6 flex gap-2">
       <input
         ref={ref}
         type="text"
@@ -448,15 +449,15 @@ const MessageInput = React.forwardRef<
         onFocus={handleFocus}
         onBlur={handleBlur}
         onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && submit()}
-        placeholder="Speak into the well… (or / for commands)"
+        placeholder="Speak… (or /help)"
         disabled={disabled}
-        className="flex-1 bg-witch-soot-800/90 border border-witch-plum-700/50 rounded-lg px-4 py-3 text-sm text-witch-parchment placeholder:text-witch-sage-500/70 focus:outline-none focus:ring-1 focus:ring-witch-amber-500/50 focus:border-witch-amber-500/50 disabled:opacity-50"
+        className="flex-1 bg-witch-soot-800/90 border border-witch-plum-700/50 rounded-lg px-3 sm:px-4 py-3 text-sm text-witch-parchment placeholder:text-witch-sage-500/70 focus:outline-none focus:ring-1 focus:ring-witch-amber-500/50 focus:border-witch-amber-500/50 disabled:opacity-50"
       />
       <button
         type="button"
         onClick={submit}
         disabled={disabled || !value.trim()}
-        className="px-4 py-3 rounded-lg bg-witch-plum-700/70 hover:bg-witch-plum-500/80 text-sm font-medium text-witch-parchment disabled:opacity-50 transition-colors"
+        className="px-3 sm:px-4 py-3 rounded-lg bg-witch-plum-700/70 hover:bg-witch-plum-500/80 active:bg-witch-plum-600/80 text-sm font-medium text-witch-parchment disabled:opacity-50 transition-colors"
       >
         Send
       </button>
