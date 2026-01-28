@@ -1,7 +1,7 @@
 /**
  * Zustand store for the ephemeral message stream.
- * Rule of Three: we keep at most 3 messages in the visible stream.
- * The store can hold a few more for animation (leaving message) then trim.
+ * Rule of Three: newest 3 are fully visible, older ones fade gradually.
+ * We keep up to MAX_VISIBLE messages before marking oldest as leaving.
  */
 
 import { create } from "zustand";
@@ -18,7 +18,7 @@ export type Message = {
   leaving?: boolean;
 };
 
-const MAX_VISIBLE = 3;
+const MAX_VISIBLE = 6; // Keep 6 messages, fade those beyond the newest 3
 
 type StreamState = {
   messages: Message[];

@@ -8,11 +8,27 @@ import { useIdle } from "@/hooks/useIdle";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
 import { Glamour } from "./Glamour";
 import { SigilIcon } from "./SigilIcon";
+import { ActivityLog } from "./ActivityLog";
+import { ContextualHints } from "./ContextualHints";
+import { Logo } from "./Logo";
 
 const RULE_OF_THREE = 3;
+const MAX_VISIBLE = 6; // Show up to 6 messages, blur those beyond 3
 const IDLE_MS = 45_000;
-
 const SLASH_FEEDBACK_MS = 4000;
+
+// Relative timestamp helper
+function formatRelativeTime(ts: number): string {
+  const now = Date.now();
+  const diff = Math.floor((now - ts) / 1000);
+  if (diff < 5) return "just now";
+  if (diff < 60) return `${diff}s ago`;
+  const mins = Math.floor(diff / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
 
 export function ChatRoom() {
   const messages = useStreamStore((s) => s.messages);
@@ -68,13 +84,24 @@ export function ChatRoom() {
     return () => document.removeEventListener("copy", onCopy, true);
   }, [socket]);
 
-  // Rule of Three: only the latest 3 non-leaving messages; any leaving message dissipates separately
-  const visibleMessages = messages.filter((m) => !m.leaving).slice(-RULE_OF_THREE);
+  // Rule of Three: latest 3 are fully visible, older ones blur progressively
+  const nonLeavingMessages = messages.filter((m) => !m.leaving);
+  const visibleMessages = nonLeavingMessages.slice(-MAX_VISIBLE);
   const leavingMessages = messages.filter((m) => m.leaving);
+
+  // Calculate fade level: 0 = fully visible (newest 3), 1-3 = progressively more faded
+  const getFadeLevel = (index: number, total: number): number => {
+    const positionFromEnd = total - 1 - index;
+    if (positionFromEnd < RULE_OF_THREE) return 0; // Newest 3 are fully visible
+    return Math.min(positionFromEnd - RULE_OF_THREE + 1, 3); // 1, 2, 3 levels of fade
+  };
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6 relative">
       <Glamour />
+      <ActivityLog />
+      <ContextualHints />
+      <Logo />
       <div className="absolute top-4 left-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-witch-sage-500/80">
         <span className="font-medium text-witch-plum-400/90">{roomTitle}</span>
         <span className="text-witch-sage-500/50">·</span>
@@ -95,8 +122,16 @@ export function ChatRoom() {
         </span>
       </div>
       {someoneTyping && (
-        <p className="absolute left-1/2 -translate-x-1/2 top-[calc(50%-5rem)] text-xs text-witch-sage-500/60 italic animate-pulse">
-          Someone is speaking…
+        <p className="absolute left-1/2 -translate-x-1/2 top-[calc(50%-5rem)] text-xs text-witch-sage-500/60 italic animate-pulse flex items-center gap-2">
+          <span
+            className="inline-block w-2 h-2 rounded-full"
+            style={{ backgroundColor: someoneTyping.color }}
+          />
+          {someoneTyping.handle ? (
+            <><span className="font-mono not-italic text-witch-plum-400/70">{someoneTyping.handle}</span> is speaking…</>
+          ) : (
+            <>Someone is speaking…</>
+          )}
         </p>
       )}
 
@@ -139,12 +174,13 @@ export function ChatRoom() {
               </span>
             </motion.div>
           ))}
-          {visibleMessages.map((msg) => (
+          {visibleMessages.map((msg, index) => (
             <StreamMessage
               key={msg.id}
               message={msg}
               onDissipateEnd={() => removeAfterDissipate(msg.id)}
               reducedMotion={reducedMotion}
+              fadeLevel={getFadeLevel(index, visibleMessages.length)}
             />
           ))}
           {leavingMessages.map((msg) => (
@@ -189,27 +225,39 @@ function StreamMessage({
   onDissipateEnd,
   leaving = false,
   reducedMotion = false,
+  fadeLevel = 0,
 }: {
   message: Message;
   onDissipateEnd: () => void;
   leaving?: boolean;
   reducedMotion?: boolean;
+  fadeLevel?: number;
 }) {
+  const [relativeTime, setRelativeTime] = useState(() => formatRelativeTime(message.ts));
   const duration = reducedMotion ? 0 : leaving ? 0.5 : 0.4;
   const noBlur = reducedMotion;
+
+  // Fade settings based on fadeLevel (0 = fully visible, 1-3 = progressively faded)
+  const fadeOpacity = fadeLevel === 0 ? 1 : Math.max(0.1, 1 - fadeLevel * 0.3);
+  const fadeBlur = fadeLevel === 0 ? 0 : fadeLevel * 3; // 0, 3, 6, 9px blur
+
+  // Update timestamp every 10 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setRelativeTime(formatRelativeTime(message.ts));
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [message.ts]);
 
   return (
     <motion.div
       layout
-      initial={
-        leaving ? false : noBlur ? { opacity: 0 } : { opacity: 0, filter: "blur(8px)", y: 8 }
+      initial={leaving ? false : { opacity: 0, y: 8 }}
+      animate={leaving
+        ? { opacity: 0, y: -12, scale: 0.98 }
+        : { opacity: fadeOpacity, y: 0, filter: `blur(${fadeBlur}px)`, scale: 1 - fadeLevel * 0.02 }
       }
-      animate={
-        leaving
-          ? noBlur ? { opacity: 0 } : { opacity: 0, filter: "blur(12px)", y: -12, scale: 0.98 }
-          : noBlur ? { opacity: 1 } : { opacity: 1, filter: "blur(0px)", y: 0 }
-      }
-      exit={noBlur ? { opacity: 0 } : { opacity: 0, filter: "blur(12px)", y: -12, scale: 0.98 }}
+      exit={{ opacity: 0, y: -12, scale: 0.98 }}
       transition={{
         duration,
         ease: leaving ? [0.4, 0, 1, 1] : [0, 0, 0.2, 1],
@@ -244,6 +292,9 @@ function StreamMessage({
           }
         >
           {message.text}
+        </span>
+        <span className="text-[10px] text-witch-sage-500/50 ml-auto shrink-0" title={new Date(message.ts).toLocaleString()}>
+          {relativeTime}
         </span>
       </div>
     </motion.div>

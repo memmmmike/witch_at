@@ -6,6 +6,30 @@
 const { createServer } = require("http");
 const { Server } = require("socket.io");
 const Sentiment = require("sentiment");
+const redis = require("./lib/redis");
+
+// Structured logger
+const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
+const LOG_LEVEL = LOG_LEVELS[process.env.LOG_LEVEL] ?? LOG_LEVELS.info;
+const logger = {
+  _log(level, message, data = {}) {
+    if (LOG_LEVELS[level] > LOG_LEVEL) return;
+    const entry = {
+      timestamp: new Date().toISOString(),
+      level,
+      message,
+      ...data,
+    };
+    const output = JSON.stringify(entry);
+    if (level === "error") console.error(output);
+    else if (level === "warn") console.warn(output);
+    else console.log(output);
+  },
+  info: (msg, data) => logger._log("info", msg, data),
+  warn: (msg, data) => logger._log("warn", msg, data),
+  error: (msg, data) => logger._log("error", msg, data),
+  debug: (msg, data) => logger._log("debug", msg, data),
+};
 
 const PORT = parseInt(process.env.SOCKET_PORT || "4001", 10);
 // When CORS_ORIGIN unset: allow all (dev). When set: comma-separated list (prod).
@@ -19,8 +43,10 @@ const corsOpt = CORS_ORIGIN
 
 const sentiment = new Sentiment();
 const MAX_MESSAGES = 3;
-const recentMessages = [];
-const sentimentHistory = [];
+const MAX_SENTIMENT_HISTORY = 5;
+// In-memory caches (synced with Redis when available)
+let recentMessagesCache = [];
+let sentimentHistoryCache = [];
 const MOOD_NEUTRAL = "neutral";
 const MOOD_CALM = "calm";
 const MOOD_INTENSE = "intense";
@@ -29,7 +55,90 @@ const ROOM_TITLE = process.env.ROOM_TITLE || "the well";
 const MOOD_DECAY_MS = 3 * 60 * 1000;
 let lastMessageTs = 0;
 let moodDecayTimer = null;
-const socketIdToClientId = new Map();
+const socketIdToIP = new Map(); // Track unique users by IP
+const typingTimers = new Map();
+
+// Get client IP from socket (handles proxies)
+function getClientIP(socket) {
+  const forwarded = socket.handshake.headers["x-forwarded-for"];
+  if (forwarded) {
+    return forwarded.split(",")[0].trim();
+  }
+  return socket.handshake.address;
+}
+
+// Rate limiting
+const rateLimits = new Map(); // socketId -> { messages: [], typing: [], join: [], total: [] }
+const RATE_LIMITS = {
+  message: { max: 10, windowMs: 10000 },    // 10 messages per 10 seconds
+  typing: { max: 5, windowMs: 1000 },       // 5 typing events per second
+  join: { max: 1, windowMs: 5000 },         // 1 join per 5 seconds
+  total: { max: 100, windowMs: 60000 },     // 100 events per minute (abuse threshold)
+};
+
+function getRateLimitBucket(socketId) {
+  if (!rateLimits.has(socketId)) {
+    rateLimits.set(socketId, { message: [], typing: [], join: [], total: [] });
+  }
+  return rateLimits.get(socketId);
+}
+
+function checkRateLimit(socketId, eventType) {
+  const bucket = getRateLimitBucket(socketId);
+  const now = Date.now();
+  const config = RATE_LIMITS[eventType];
+  if (!config) return { allowed: true };
+
+  // Clean old entries
+  bucket[eventType] = bucket[eventType].filter((ts) => now - ts < config.windowMs);
+  bucket.total = bucket.total.filter((ts) => now - ts < RATE_LIMITS.total.windowMs);
+
+  // Check total abuse threshold
+  if (bucket.total.length >= RATE_LIMITS.total.max) {
+    return { allowed: false, reason: "abuse", remaining: 0 };
+  }
+
+  // Check specific limit
+  if (bucket[eventType].length >= config.max) {
+    return { allowed: false, reason: "rate-limited", remaining: 0 };
+  }
+
+  // Record this event
+  bucket[eventType].push(now);
+  bucket.total.push(now);
+  return { allowed: true, remaining: config.max - bucket[eventType].length };
+}
+
+function cleanupRateLimits(socketId) {
+  rateLimits.delete(socketId);
+}
+
+// Input validation
+const HEX_COLOR_REGEX = /^#[0-9a-fA-F]{6}$/;
+const HANDLE_REGEX = /^[a-zA-Z0-9 ]{1,32}$/;
+const TAG_REGEX = /^[a-zA-Z0-9]{1,16}$/;
+
+function validateColor(color) {
+  if (!color || typeof color !== "string") return null;
+  return HEX_COLOR_REGEX.test(color) ? color : null;
+}
+
+function validateHandle(handle) {
+  if (!handle || typeof handle !== "string") return null;
+  const trimmed = handle.trim().slice(0, 32);
+  return HANDLE_REGEX.test(trimmed) ? trimmed : null;
+}
+
+function validateTag(tag) {
+  if (!tag || typeof tag !== "string") return null;
+  const trimmed = tag.trim().slice(0, 16);
+  return TAG_REGEX.test(trimmed) ? trimmed : null;
+}
+
+function validateSigil(sigil) {
+  if (!sigil || typeof sigil !== "string") return null;
+  return SIGILS.includes(sigil) ? sigil : null;
+}
 
 function getMoodFromScore(avgScore) {
   if (avgScore < -0.4) return MOOD_INTENSE;
@@ -46,29 +155,54 @@ function energyPenalty(text) {
   return (mostlyCaps ? 0.6 : 0) + Math.min(exclamations * 0.25, 0.8);
 }
 
-function computeCurrentMood() {
-  if (sentimentHistory.length === 0) return MOOD_NEUTRAL;
-  const avg = sentimentHistory.reduce((a, b) => a + b, 0) / sentimentHistory.length;
+function computeCurrentMood(history) {
+  const hist = history || sentimentHistoryCache;
+  if (hist.length === 0) return MOOD_NEUTRAL;
+  const avg = hist.reduce((a, b) => a + b, 0) / hist.length;
   return getMoodFromScore(avg);
 }
 
+async function computeCurrentMoodAsync() {
+  const history = await redis.getSentimentHistory(MAX_SENTIMENT_HISTORY);
+  sentimentHistoryCache = history;
+  return computeCurrentMood(history);
+}
+
 function broadcastPresence(io) {
-  const count = new Set(socketIdToClientId.values()).size;
-  io.emit("presence", count);
+  const uniqueIPs = new Set(socketIdToIP.values()).size;
+  io.emit("presence", uniqueIPs);
 }
 
 function startMoodDecayTimer(io) {
   if (moodDecayTimer) clearInterval(moodDecayTimer);
-  moodDecayTimer = setInterval(() => {
-    if (Date.now() - lastMessageTs > MOOD_DECAY_MS && sentimentHistory.length > 0) {
-      sentimentHistory.push(0);
-      if (sentimentHistory.length > 5) sentimentHistory.shift();
+  moodDecayTimer = setInterval(async () => {
+    if (Date.now() - lastMessageTs > MOOD_DECAY_MS && sentimentHistoryCache.length > 0) {
+      await redis.addSentiment(0, MAX_SENTIMENT_HISTORY);
+      sentimentHistoryCache = await redis.getSentimentHistory(MAX_SENTIMENT_HISTORY);
       io.emit("mood", computeCurrentMood());
     }
   }, 60 * 1000);
 }
 
-const httpServer = createServer((_req, res) => {
+const serverStartTime = Date.now();
+
+// Initialize Redis
+redis.initRedis();
+
+const httpServer = createServer((req, res) => {
+  // Health check endpoint
+  if (req.url === "/health" && req.method === "GET") {
+    const health = {
+      status: "ok",
+      uptime: Math.floor((Date.now() - serverStartTime) / 1000),
+      connections: new Set(socketIdToIP.values()).size,
+      redis: redis.isAvailable() ? "connected" : "unavailable",
+      timestamp: new Date().toISOString(),
+    };
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(health));
+    return;
+  }
   res.writeHead(200, { "Content-Type": "text/plain" });
   res.end("Witchat Socket server");
 });
@@ -82,29 +216,64 @@ const io = new Server(httpServer, {
 startMoodDecayTimer(io);
 
 io.on("connection", (socket) => {
-  console.log("[Witchat] Client connected");
-  socket.on("join", (payload) => {
-    const { color, handle, tag, sigil, clientId } = payload || {};
-    const cid = clientId && typeof clientId === "string" ? clientId.slice(0, 64) : socket.id;
-    socketIdToClientId.set(socket.id, cid);
+  logger.info("Client connected", { socketId: socket.id });
+
+  socket.on("join", async (payload) => {
+    // Rate limit join events
+    const rateCheck = checkRateLimit(socket.id, "join");
+    if (!rateCheck.allowed) {
+      socket.emit("rate-limited", { event: "join", reason: rateCheck.reason });
+      if (rateCheck.reason === "abuse") {
+        logger.warn("Abuse detected, disconnecting", { socketId: socket.id });
+        socket.disconnect(true);
+      }
+      return;
+    }
+
+    const { color, handle, tag, sigil } = payload || {};
+    const clientIP = getClientIP(socket);
+    socketIdToIP.set(socket.id, clientIP);
     broadcastPresence(io);
-    socket.userColor = color || `#${Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0")}`;
-    socket.userHandle = handle || null;
-    socket.userTag = tag ? String(tag).slice(0, 16).trim() : null;
-    socket.userSigil =
-      sigil && SIGILS.includes(sigil) ? sigil : SIGILS[Math.floor(Math.random() * SIGILS.length)];
+    logger.debug("User joined", { socketId: socket.id, ip: clientIP });
+
+    // Validate inputs
+    const validatedColor = validateColor(color);
+    const validatedHandle = validateHandle(handle);
+    const validatedTag = validateTag(tag);
+    const validatedSigil = validateSigil(sigil);
+
+    socket.userColor = validatedColor || `#${Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0")}`;
+    socket.userHandle = validatedHandle;
+    socket.userTag = validatedTag;
+    socket.userSigil = validatedSigil || SIGILS[Math.floor(Math.random() * SIGILS.length)];
+
     socket.emit("identity", {
       color: socket.userColor,
       handle: socket.userHandle,
       tag: socket.userTag,
       sigil: socket.userSigil,
     });
+
+    // Orality: new users don't get previous messages (like joining a conversation in progress)
+    // Existing users who refresh will restore from sessionStorage on the client side
     socket.emit("stream", []);
-    socket.emit("mood", computeCurrentMood());
+    const mood = await computeCurrentMoodAsync();
+    socket.emit("mood", mood);
     socket.emit("room-title", ROOM_TITLE);
   });
 
-  socket.on("message", (payload) => {
+  socket.on("message", async (payload) => {
+    // Rate limit messages
+    const rateCheck = checkRateLimit(socket.id, "message");
+    if (!rateCheck.allowed) {
+      socket.emit("rate-limited", { event: "message", reason: rateCheck.reason });
+      if (rateCheck.reason === "abuse") {
+        logger.warn("Abuse detected, disconnecting", { socketId: socket.id });
+        socket.disconnect(true);
+      }
+      return;
+    }
+
     const text = typeof payload === "string" ? payload : payload?.text;
     const whisper = typeof payload === "object" && payload?.whisper === true;
     if (!text || typeof text !== "string") return;
@@ -115,8 +284,10 @@ io.on("connection", (socket) => {
     const result = sentiment.analyze(trimmed);
     const energy = energyPenalty(trimmed);
     const effectiveScore = result.score - energy;
-    sentimentHistory.push(effectiveScore);
-    if (sentimentHistory.length > 5) sentimentHistory.shift();
+
+    // Store sentiment in Redis
+    await redis.addSentiment(effectiveScore, MAX_SENTIMENT_HISTORY);
+    sentimentHistoryCache = await redis.getSentimentHistory(MAX_SENTIMENT_HISTORY);
 
     const msg = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
@@ -129,28 +300,35 @@ io.on("connection", (socket) => {
       ts: Date.now(),
     };
 
-    recentMessages.push(msg);
-    if (recentMessages.length > MAX_MESSAGES) recentMessages.shift();
+    // Store message in Redis
+    await redis.addMessage(msg, MAX_MESSAGES);
+    recentMessagesCache = await redis.getMessages(MAX_MESSAGES);
 
     io.emit("message", msg);
     io.emit("mood", computeCurrentMood());
   });
 
-  socket.on("reveal", (payload) => {
+  socket.on("reveal", async (payload) => {
     const handle = typeof payload === "string" ? payload : payload?.handle;
     const tag = typeof payload === "object" && payload?.tag !== undefined ? payload.tag : undefined;
     const sigil = typeof payload === "object" && payload?.sigil != null ? payload.sigil : undefined;
-    socket.userHandle = handle ? String(handle).slice(0, 32) : null;
-    socket.userTag = tag !== undefined && tag !== null ? String(tag).slice(0, 16).trim() : null;
-    if (sigil && SIGILS.includes(sigil)) socket.userSigil = sigil;
+
+    // Validate inputs
+    socket.userHandle = validateHandle(handle);
+    socket.userTag = validateTag(tag);
+    const validatedSigil = validateSigil(sigil);
+    if (validatedSigil) socket.userSigil = validatedSigil;
+
     const color = socket.userColor || "#7b5278";
-    for (const msg of recentMessages) {
-      if (msg.color === color) {
-        msg.handle = socket.userHandle;
-        msg.tag = socket.userTag;
-        msg.sigil = socket.userSigil || null;
-      }
-    }
+
+    // Update messages in Redis with new identity info
+    await redis.updateMessagesByColor(color, {
+      handle: socket.userHandle,
+      tag: socket.userTag,
+      sigil: socket.userSigil || null,
+    });
+    recentMessagesCache = await redis.getMessages(MAX_MESSAGES);
+
     socket.emit("identity", {
       color,
       handle: socket.userHandle,
@@ -166,32 +344,99 @@ io.on("connection", (socket) => {
   });
 
   socket.on("typing", () => {
+    // Rate limit typing events
+    const rateCheck = checkRateLimit(socket.id, "typing");
+    if (!rateCheck.allowed) {
+      if (rateCheck.reason === "abuse") {
+        logger.warn("Abuse detected, disconnecting", { socketId: socket.id });
+        socket.disconnect(true);
+      }
+      return;
+    }
+
     socket.broadcast.emit("typing", { color: socket.userColor, handle: socket.userHandle });
+    // Auto-emit typing-stop after 5 seconds of no activity
+    if (typingTimers.has(socket.id)) clearTimeout(typingTimers.get(socket.id));
+    typingTimers.set(socket.id, setTimeout(() => {
+      socket.broadcast.emit("typing-stop", { color: socket.userColor });
+      typingTimers.delete(socket.id);
+    }, 5000));
   });
+
   socket.on("typing-stop", () => {
     socket.broadcast.emit("typing-stop", { color: socket.userColor });
+    if (typingTimers.has(socket.id)) {
+      clearTimeout(typingTimers.get(socket.id));
+      typingTimers.delete(socket.id);
+    }
   });
 
   socket.on("ping", () => socket.emit("pong"));
+
   socket.on("copy", () => {
     io.emit("copy", {
       color: socket.userColor || "#7b5278",
       handle: socket.userHandle || null,
     });
   });
+
   socket.on("disconnect", () => {
-    socketIdToClientId.delete(socket.id);
+    socketIdToIP.delete(socket.id);
+    cleanupRateLimits(socket.id);
+    if (typingTimers.has(socket.id)) {
+      clearTimeout(typingTimers.get(socket.id));
+      typingTimers.delete(socket.id);
+    }
     broadcastPresence(io);
   });
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`[Witchat] Socket server listening on http://localhost:${PORT}`);
+  logger.info("Socket server started", { port: PORT, url: `http://localhost:${PORT}` });
 }).on("error", (err) => {
   if (err.code === "EADDRINUSE") {
-    console.error(`> Port ${PORT} is already in use. Free it with:\n   fuser -k ${PORT}/tcp\n   Then run again.`);
+    logger.error("Port already in use", { port: PORT, hint: `fuser -k ${PORT}/tcp` });
   } else {
-    console.error(err);
+    logger.error("Server error", { error: err.message });
   }
   process.exit(1);
 });
+
+// Graceful shutdown
+let isShuttingDown = false;
+
+function gracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  logger.info("Shutdown initiated", { signal });
+
+  // Notify connected clients
+  io.emit("server-shutdown", { message: "Server is shutting down" });
+
+  // Clear all timers
+  if (moodDecayTimer) clearInterval(moodDecayTimer);
+  for (const timer of typingTimers.values()) {
+    clearTimeout(timer);
+  }
+  typingTimers.clear();
+
+  // Close all socket connections gracefully
+  io.close(async () => {
+    logger.info("All connections closed");
+    await redis.closeRedis();
+    logger.info("Redis closed");
+    httpServer.close(() => {
+      logger.info("HTTP server closed");
+      process.exit(0);
+    });
+  });
+
+  // Force exit after 10 seconds if graceful shutdown fails
+  setTimeout(() => {
+    logger.warn("Forced shutdown after timeout");
+    process.exit(1);
+  }, 10000);
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));

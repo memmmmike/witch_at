@@ -32,6 +32,10 @@ export function connectSocket(): Socket {
   socket = io(url, {
     path: SOCKET_PATH,
     transports: ["websocket", "polling"],
+    reconnection: true,
+    reconnectionAttempts: 10,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
   });
   return socket;
 }

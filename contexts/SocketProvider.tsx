@@ -96,14 +96,26 @@ export type CopyNotification = {
   handle: string | null;
 };
 
+export type ActivityLogEntry = {
+  id: number;
+  type: "join" | "leave" | "reveal" | "presence" | "copy";
+  color?: string;
+  handle?: string | null;
+  message: string;
+  ts: number;
+};
+
+const MAX_ACTIVITY_LOG = 10;
+
 type SocketContextValue = {
   connected: boolean;
   mood: Mood;
   identity: Identity | null;
   copyNotifications: CopyNotification[];
   presence: number;
-  someoneTyping: boolean;
+  someoneTyping: { color: string; handle: string | null } | null;
   roomTitle: string;
+  activityLog: ActivityLogEntry[];
 };
 
 const SocketContext = createContext<SocketContextValue>({
@@ -112,8 +124,9 @@ const SocketContext = createContext<SocketContextValue>({
   identity: null,
   copyNotifications: [],
   presence: 0,
-  someoneTyping: false,
+  someoneTyping: null,
   roomTitle: "the well",
+  activityLog: [],
 });
 
 const COPY_NOTIFICATION_MS = 5000;
@@ -124,9 +137,11 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [copyNotifications, setCopyNotifications] = useState<CopyNotification[]>([]);
   const [presence, setPresence] = useState(0);
-  const [someoneTyping, setSomeoneTyping] = useState(false);
+  const [someoneTyping, setSomeoneTyping] = useState<{ color: string; handle: string | null } | null>(null);
   const [roomTitle, setRoomTitle] = useState("the well");
+  const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevPresenceRef = useRef<number>(0);
   const socketRef = useRef<ReturnType<typeof connectSocket> | null>(null);
   const clearStreamOnJoinRef = useRef(false);
   const addMessage = useStreamStore((s) => s.addMessage);
@@ -136,6 +151,21 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   const updateTagForColor = useStreamStore((s) => s.updateTagForColor);
   const updateSigilForColor = useStreamStore((s) => s.updateSigilForColor);
   const { playMessageSound } = useSound();
+
+  const addActivityLog = (type: ActivityLogEntry["type"], message: string, color?: string, handle?: string | null) => {
+    setActivityLog((prev) => {
+      const entry: ActivityLogEntry = {
+        id: Date.now(),
+        type,
+        color,
+        handle,
+        message,
+        ts: Date.now(),
+      };
+      const updated = [...prev, entry];
+      return updated.slice(-MAX_ACTIVITY_LOG);
+    });
+  };
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -216,14 +246,23 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       setIdentity(payload);
       saveIdentity(payload);
     });
-    sock.on("presence", (count: number) => setPresence(count));
-    sock.on("room-title", (title: string) => setRoomTitle(title || "the well"));
-    sock.on("typing", () => {
-      setSomeoneTyping(true);
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-      typingTimeoutRef.current = setTimeout(() => setSomeoneTyping(false), 3000);
+    sock.on("presence", (count: number) => {
+      const prev = prevPresenceRef.current;
+      if (count > prev && prev > 0) {
+        addActivityLog("join", "Someone entered the stream");
+      } else if (count < prev && prev > 0) {
+        addActivityLog("leave", "Someone left the stream");
+      }
+      prevPresenceRef.current = count;
+      setPresence(count);
     });
-    sock.on("typing-stop", () => setSomeoneTyping(false));
+    sock.on("room-title", (title: string) => setRoomTitle(title || "the well"));
+    sock.on("typing", (payload: { color: string; handle: string | null }) => {
+      setSomeoneTyping(payload);
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = setTimeout(() => setSomeoneTyping(null), 3000);
+    });
+    sock.on("typing-stop", () => setSomeoneTyping(null));
     sock.on("stream", (messages: Parameters<typeof setStream>[0]) => {
       const list = Array.isArray(messages) ? messages : [];
       setStream(list);
@@ -241,9 +280,12 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       addMessage(msg);
       playMessageSound();
     });
-    sock.on("identity-revealed", (payload: { color: string; handle: string | null; tag?: string | null }) => {
+    sock.on("identity-revealed", (payload: { color: string; handle: string | null; tag?: string | null; sigil?: string | null }) => {
       updateHandleForColor(payload.color, payload.handle);
       updateTagForColor(payload.color, payload.tag ?? null);
+      updateSigilForColor(payload.color, payload.sigil ?? null);
+      const name = payload.handle || "Someone";
+      addActivityLog("reveal", `${name} updated their identity`, payload.color, payload.handle);
     });
     sock.on("copy", (payload: { color: string; handle: string | null }) => {
       const id = Date.now();
@@ -251,6 +293,14 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       setTimeout(() => {
         setCopyNotifications((prev) => prev.filter((n) => n.id !== id));
       }, COPY_NOTIFICATION_MS);
+      const name = payload.handle || "Someone";
+      addActivityLog("copy", `${name} took a note`, payload.color, payload.handle);
+    });
+    sock.on("rate-limited", (payload: { event: string; reason: string }) => {
+      console.warn("[Witchat] Rate limited:", payload.event, payload.reason);
+    });
+    sock.on("server-shutdown", () => {
+      console.warn("[Witchat] Server is shutting down");
     });
 
     return () => {
@@ -267,6 +317,8 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       sock.off("message");
       sock.off("identity-revealed");
       sock.off("copy");
+      sock.off("rate-limited");
+      sock.off("server-shutdown");
     };
   }, [addMessage, setStream, clearStream, updateHandleForColor, updateTagForColor, updateSigilForColor]);
 
@@ -277,7 +329,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   }, [mood]);
 
   return (
-    <SocketContext.Provider value={{ connected, mood, identity, copyNotifications, presence, someoneTyping, roomTitle }}>
+    <SocketContext.Provider value={{ connected, mood, identity, copyNotifications, presence, someoneTyping, roomTitle, activityLog }}>
       {children}
     </SocketContext.Provider>
   );
