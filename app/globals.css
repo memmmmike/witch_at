@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Witch palette: soot, forest, plum, sage, amber, parchment */
+  --witch-soot-950: #0c090d;
+  --witch-soot-900: #120f12;
+  --witch-soot-800: #1a161a;
+  --witch-soot-700: #231e24;
+  --witch-forest-900: #0e1610;
+  --witch-forest-700: #1a2a1c;
+  --witch-forest-500: #3d5240;
+  --witch-plum-900: #2a1f2e;
+  --witch-plum-700: #3d2a42;
+  --witch-plum-500: #5a3d5e;
+  --witch-plum-400: #7b5278;
+  --witch-sage-500: #5c6b5c;
+  --witch-sage-400: #7a8a7a;
+  --witch-amber-500: #b8942e;
+  --witch-amber-400: #c9a227;
+  --witch-parchment: #e0d9d0;
+  --witch-parchment-muted: #a89f94;
+  --mood-h: 280;
+  --mood-s: 35%;
+  --mood-l: 18%;
+}
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+  background: var(--witch-soot-950);
+  color: var(--witch-parchment);
+  /* Smooth transition when Context Engine updates mood */
+  transition: background 1.2s ease, background-image 1.2s ease;
+}
+
+/* Dynamic mood gradient — Context Engine (sentiment → atmosphere) */
+/* Calm: deep forest night */
+body.mood-calm {
+  background: linear-gradient(135deg, #0a0e0a 0%, #0e1610 25%, #142018 50%, #0c120e 100%);
+  background-attachment: fixed;
+}
+
+/* Neutral: soot + plum, cauldron simmer */
+body.mood-neutral {
+  background: linear-gradient(135deg, #0c090d 0%, #1a1418 35%, #231a28 60%, #120f12 100%);
+  background-attachment: fixed;
+}
+
+/* Intense: ember and candle glow */
+body.mood-intense {
+  background: linear-gradient(135deg, #1a0f08 0%, #2a1810 30%, #3d2018 55%, #1a0d08 100%);
+  background-attachment: fixed;
+}
+
+/* Liquid / atmospheric feel */
+.glass {
+  background: rgba(18, 15, 18, 0.65);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
