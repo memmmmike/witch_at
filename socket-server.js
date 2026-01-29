@@ -58,11 +58,20 @@ let moodDecayTimer = null;
 const socketIdToIP = new Map(); // Track unique users by IP
 const typingTimers = new Map();
 
-// Get client IP from socket (handles proxies)
+// Get client IP from socket (handles Cloudflare and other proxies)
 function getClientIP(socket) {
-  const forwarded = socket.handshake.headers["x-forwarded-for"];
-  if (forwarded) {
-    return forwarded.split(",")[0].trim();
+  const headers = socket.handshake.headers;
+  // Cloudflare's real IP header
+  if (headers["cf-connecting-ip"]) {
+    return headers["cf-connecting-ip"];
+  }
+  // Standard proxy header
+  if (headers["x-forwarded-for"]) {
+    return headers["x-forwarded-for"].split(",")[0].trim();
+  }
+  // True-Client-IP (some CDNs)
+  if (headers["true-client-ip"]) {
+    return headers["true-client-ip"];
   }
   return socket.handshake.address;
 }
@@ -70,10 +79,10 @@ function getClientIP(socket) {
 // Rate limiting
 const rateLimits = new Map(); // socketId -> { messages: [], typing: [], join: [], total: [] }
 const RATE_LIMITS = {
-  message: { max: 10, windowMs: 10000 },    // 10 messages per 10 seconds
-  typing: { max: 5, windowMs: 1000 },       // 5 typing events per second
-  join: { max: 1, windowMs: 5000 },         // 1 join per 5 seconds
-  total: { max: 100, windowMs: 60000 },     // 100 events per minute (abuse threshold)
+  message: { max: 15, windowMs: 10000 },    // 15 messages per 10 seconds
+  typing: { max: 10, windowMs: 1000 },      // 10 typing events per second
+  join: { max: 5, windowMs: 10000 },        // 5 joins per 10 seconds (allows reconnects)
+  total: { max: 200, windowMs: 60000 },     // 200 events per minute (abuse threshold)
 };
 
 function getRateLimitBucket(socketId) {

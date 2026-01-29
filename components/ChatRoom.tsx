@@ -203,7 +203,7 @@ export function ChatRoom() {
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 4 }}
-            className="absolute bottom-[4.5rem] left-1/2 -translate-x-1/2 w-full max-w-lg glass rounded-lg px-4 py-3 text-xs text-witch-plum-400/95 whitespace-pre-wrap text-center z-0"
+            className="absolute bottom-[4.5rem] left-1/2 -translate-x-1/2 w-full max-w-lg glass rounded-lg px-4 py-3 text-xs text-witch-plum-400/95 whitespace-pre-wrap text-left z-0"
           >
             {slashFeedback}
           </motion.div>
