@@ -15,7 +15,8 @@ import { Logo } from "./Logo";
 const RULE_OF_THREE = 3;
 const MAX_VISIBLE = 6; // Show up to 6 messages, blur those beyond 3
 const IDLE_MS = 45_000;
-const SLASH_FEEDBACK_MS = 4000;
+const SLASH_FEEDBACK_MS = 4000; // For non-help feedback
+const PERSISTENT_COMMANDS = ["/help"]; // These stay until dismissed
 
 // Relative timestamp helper
 function formatRelativeTime(ts: number): string {
@@ -34,7 +35,7 @@ export function ChatRoom() {
   const messages = useStreamStore((s) => s.messages);
   const removeAfterDissipate = useStreamStore((s) => s.removeAfterDissipate);
   const clearStream = useStreamStore((s) => s.clearStream);
-  const { socket, connected, mood, copyNotifications, presence, someoneTyping, roomTitle } = useSocket();
+  const { socket, connected, mood, copyNotifications, presence, someoneTyping, roomTitle, presenceGhosts, summoned, resonance, silenceSettled, attention, affirmations } = useSocket();
   const isIdle = useIdle(IDLE_MS);
   const reducedMotion = useReducedMotion();
   const [slashFeedback, setSlashFeedback] = useState<string | null>(null);
@@ -47,6 +48,11 @@ export function ChatRoom() {
     } else {
       socket.emit("message", text.trim());
     }
+  };
+
+  const handleAffirm = (messageId: string) => {
+    if (!socket) return;
+    socket.emit("affirm", messageId);
   };
 
   // Transparent copy: when user copies from a message (Ctrl+C / right-click), notify the room
@@ -65,20 +71,21 @@ export function ChatRoom() {
       const inMessage =
         getEl(anchor)?.closest?.("[data-message]") ?? getEl(focus)?.closest?.("[data-message]");
       if (inMessage) {
-        socket.emit("copy");
+        // Find which message was copied for resonance
+        const allMessages = useStreamStore.getState().messages;
+        const copied = allMessages.find((m) => m.text.includes(text) || text.includes(m.text));
+        socket.emit("copy", { messageId: copied?.id || null });
         return;
       }
       // 2) Fallback: copied text matches/overlaps a message in the stream
-      const messageTexts = useStreamStore.getState().messages
-        .filter((m) => !m.leaving)
-        .map((m) => m.text);
-      const fromStream = messageTexts.some(
-        (msgText) =>
-          msgText.includes(text) ||
-          text.includes(msgText) ||
-          msgText === text
+      const allMessages = useStreamStore.getState().messages.filter((m) => !m.leaving);
+      const copied = allMessages.find(
+        (m) =>
+          m.text.includes(text) ||
+          text.includes(m.text) ||
+          m.text === text
       );
-      if (fromStream) socket.emit("copy");
+      if (copied) socket.emit("copy", { messageId: copied.id });
     };
     document.addEventListener("copy", onCopy, true);
     return () => document.removeEventListener("copy", onCopy, true);
@@ -112,6 +119,45 @@ export function ChatRoom() {
         <span className="text-witch-sage-500/50 hidden sm:inline">·</span>
         <span title="People in the stream" className="hidden sm:inline">{presence} in the stream</span>
         <span className="sm:hidden">{presence}</span>
+        {/* Attention indicators - who's focused vs away vs stepping away */}
+        {attention.length > 0 && (
+          <span className="flex items-center gap-0.5 ml-1">
+            {attention.map((a, i) => (
+              <span
+                key={`att-${i}-${a.color}`}
+                className={`w-2 h-2 rounded-full transition-all duration-300 ${
+                  a.steppingAway ? "opacity-20 animate-pulse" :
+                  a.focused ? "" : "opacity-30"
+                }`}
+                style={{
+                  backgroundColor: a.steppingAway ? "transparent" : (a.focused ? a.color : "transparent"),
+                  border: (a.steppingAway || !a.focused) ? `1.5px dashed ${a.color}` : "none",
+                }}
+                title={
+                  a.steppingAway ? (a.handle ? `${a.handle} (stepping away)` : "stepping away") :
+                  a.handle ? `${a.handle} ${a.focused ? "(here)" : "(away)"}` :
+                  (a.focused ? "present" : "away")
+                }
+              />
+            ))}
+          </span>
+        )}
+        {/* Presence Ghosts: faint traces of who was recently here */}
+        {presenceGhosts.length > 0 && (
+          <span className="flex items-center gap-1 ml-1" title="Recently departed">
+            {presenceGhosts.map((ghost, i) => (
+              <span
+                key={`ghost-${i}-${ghost.color}`}
+                className="w-2 h-2 rounded-full transition-opacity duration-1000"
+                style={{
+                  backgroundColor: ghost.color,
+                  opacity: Math.max(0.15, 0.6 - ghost.fade * 0.5),
+                }}
+                title={ghost.handle ? `${ghost.handle} was here` : "Someone was here"}
+              />
+            ))}
+          </span>
+        )}
         <span className="text-witch-sage-500/50 hidden sm:inline">·</span>
         <span
           className="capitalize hidden sm:inline"
@@ -122,7 +168,39 @@ export function ChatRoom() {
           {mood === "neutral" && "Neutral"}
         </span>
       </div>
-      {someoneTyping && (
+
+      {/* Summoned indicator: gentle glow when someone is thinking of you */}
+      <AnimatePresence>
+        {summoned && (
+          <motion.div
+            key="summoned"
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            transition={{ duration: 0.3 }}
+            className="fixed inset-0 pointer-events-none z-20 flex items-center justify-center"
+          >
+            <div
+              className="absolute inset-0 animate-pulse"
+              style={{
+                background: `radial-gradient(circle at center, ${summoned.byColor}20 0%, transparent 60%)`,
+              }}
+            />
+            <p className="text-sm text-witch-plum-400/90 glass px-4 py-2 rounded-lg pointer-events-auto">
+              <span
+                className="inline-block w-2 h-2 rounded-full mr-2"
+                style={{ backgroundColor: summoned.byColor }}
+              />
+              {summoned.byHandle ? (
+                <><span className="font-mono">{summoned.byHandle}</span> is thinking of you</>
+              ) : (
+                <>Someone is thinking of you</>
+              )}
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      {someoneTyping ? (
         <p className="absolute left-1/2 -translate-x-1/2 top-[calc(50%-5rem)] text-xs text-witch-sage-500/60 italic animate-pulse flex items-center gap-2">
           <span
             className="inline-block w-2 h-2 rounded-full"
@@ -134,7 +212,11 @@ export function ChatRoom() {
             <>Someone is speaking…</>
           )}
         </p>
-      )}
+      ) : silenceSettled && presence > 1 ? (
+        <p className="absolute left-1/2 -translate-x-1/2 top-[calc(50%-5rem)] text-xs text-witch-sage-500/40 italic">
+          settled silence
+        </p>
+      ) : null}
 
       <AnimatePresence>
         {isIdle && (
@@ -180,8 +262,11 @@ export function ChatRoom() {
               key={msg.id}
               message={msg}
               onDissipateEnd={() => removeAfterDissipate(msg.id)}
+              onAffirm={() => handleAffirm(msg.id)}
               reducedMotion={reducedMotion}
               fadeLevel={getFadeLevel(index, visibleMessages.length)}
+              resonance={resonance.get(msg.id) || 0}
+              affirmColors={affirmations.get(msg.id) || []}
             />
           ))}
           {leavingMessages.map((msg) => (
@@ -189,8 +274,11 @@ export function ChatRoom() {
               key={msg.id}
               message={msg}
               onDissipateEnd={() => removeAfterDissipate(msg.id)}
+              onAffirm={() => handleAffirm(msg.id)}
               leaving
               reducedMotion={reducedMotion}
+              resonance={resonance.get(msg.id) || 0}
+              affirmColors={affirmations.get(msg.id) || []}
             />
           ))}
         </AnimatePresence>
@@ -203,9 +291,11 @@ export function ChatRoom() {
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 4 }}
-            className="absolute bottom-[4.5rem] left-1/2 -translate-x-1/2 w-full max-w-lg glass rounded-lg px-4 py-3 text-xs text-witch-plum-400/95 whitespace-pre-wrap text-left z-0"
+            onClick={() => setSlashFeedback(null)}
+            className="absolute bottom-[4.5rem] left-1/2 -translate-x-1/2 w-full max-w-lg glass rounded-lg px-4 py-3 text-xs text-witch-plum-400/95 whitespace-pre-wrap text-left z-0 cursor-pointer hover:bg-witch-soot-800/50 transition-colors"
           >
             {slashFeedback}
+            <span className="block text-[10px] text-witch-sage-500/50 mt-2">tap to dismiss</span>
           </motion.div>
         )}
       </AnimatePresence>
@@ -224,25 +314,35 @@ export function ChatRoom() {
 function StreamMessage({
   message,
   onDissipateEnd,
+  onAffirm,
   leaving = false,
   reducedMotion = false,
   fadeLevel = 0,
+  resonance = 0,
+  affirmColors = [],
 }: {
   message: Message;
   onDissipateEnd: () => void;
+  onAffirm?: () => void;
   leaving?: boolean;
   reducedMotion?: boolean;
   fadeLevel?: number;
+  resonance?: number;
+  affirmColors?: string[];
 }) {
   const [relativeTime, setRelativeTime] = useState(() => formatRelativeTime(message.ts));
-  const duration = reducedMotion ? 0 : leaving ? 0.5 : 0.4;
+  // Resonance slows down the dissipation - more copies = slower fade
+  const resonanceMultiplier = Math.max(1, 1 + resonance * 0.5);
+  const duration = reducedMotion ? 0 : leaving ? 0.5 * resonanceMultiplier : 0.4;
   const isGhost = message.ghost === true;
 
   // Fade settings based on fadeLevel (0 = fully visible, 1-3 = progressively faded)
   // Ghosts get extra heavy blur
+  // Resonance reduces fade intensity (messages with resonance stay more visible)
   const ghostBlur = isGhost ? 8 : 0;
-  const fadeOpacity = isGhost ? 0.5 : fadeLevel === 0 ? 1 : Math.max(0.1, 1 - fadeLevel * 0.3);
-  const fadeBlur = ghostBlur + (fadeLevel === 0 ? 0 : fadeLevel * 3); // 0, 3, 6, 9px blur + ghost blur
+  const resonanceOpacityBoost = Math.min(resonance * 0.1, 0.3);
+  const fadeOpacity = isGhost ? 0.5 : fadeLevel === 0 ? 1 : Math.max(0.1 + resonanceOpacityBoost, 1 - fadeLevel * 0.3);
+  const fadeBlur = ghostBlur + (fadeLevel === 0 ? 0 : Math.max(0, fadeLevel * 3 - resonance)); // Resonance reduces blur
 
   // Update timestamp every 10 seconds
   useEffect(() => {
@@ -251,6 +351,12 @@ function StreamMessage({
     }, 10000);
     return () => clearInterval(interval);
   }, [message.ts]);
+
+  const handleClick = () => {
+    if (!isGhost && onAffirm) {
+      onAffirm();
+    }
+  };
 
   return (
     <motion.div
@@ -268,10 +374,27 @@ function StreamMessage({
       onAnimationComplete={() => {
         if (leaving) onDissipateEnd();
       }}
-      className={`glass rounded-xl border border-witch-plum-900/40 ${message.whisper ? "px-3 py-2 opacity-75" : "px-4 py-3"} ${isGhost ? "select-none" : ""}`}
+      onClick={handleClick}
+      className={`glass rounded-xl border ${message.flagged ? "border-rose-600/60 bg-rose-950/20" : "border-witch-plum-900/40"} ${message.whisper ? "px-3 py-2 opacity-75" : "px-4 py-3"} ${isGhost ? "select-none" : "cursor-pointer hover:border-witch-plum-700/60"} relative overflow-hidden`}
       data-message
-      title={isGhost ? "You weren't here for this" : undefined}
+      title={isGhost ? "You weren't here for this" : "Tap to affirm"}
     >
+      {/* Affirmation pulses */}
+      <AnimatePresence>
+        {affirmColors.map((color, i) => (
+          <motion.div
+            key={`affirm-${i}-${color}`}
+            initial={{ opacity: 0.6, scale: 0.8 }}
+            animate={{ opacity: 0, scale: 2 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 1.2, ease: "easeOut" }}
+            className="absolute inset-0 rounded-xl pointer-events-none"
+            style={{
+              background: `radial-gradient(circle at center, ${color}40 0%, transparent 70%)`,
+            }}
+          />
+        ))}
+      </AnimatePresence>
       <div className="flex items-baseline gap-2 flex-wrap">
         <span
           className="inline-block w-3 h-3 rounded-full shrink-0"
@@ -314,6 +437,9 @@ const SLASH_HELP = `/clear   — clear your stream
 /mood    — show current atmosphere
 /copy    — copy latest message (others see you took a note)
 /whisper — send message in quieter style
+/summon  — gently ping someone (e.g. /summon alice)
+/away    — step away (others see you're gone)
+/back    — return from away
 /shrug   — send ¯\\_(ツ)_/¯
 /flip    — send table flip
 /spark   — clear stream, fresh start
@@ -335,16 +461,28 @@ const MessageInput = React.forwardRef<
   ref
 ) {
   const [value, setValue] = useState("");
+  const [persistentFeedback, setPersistentFeedback] = useState(false);
   const { socket, identity, mood } = useSocket();
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const showFeedback = (msg: string) => {
+  const showFeedback = (msg: string, persistent = false) => {
     onSlashFeedback(msg);
-    setTimeout(() => onSlashFeedback(null), feedbackDurationMs);
+    setPersistentFeedback(persistent);
+    if (!persistent) {
+      setTimeout(() => onSlashFeedback(null), feedbackDurationMs);
+    }
+  };
+
+  const dismissFeedback = () => {
+    if (persistentFeedback) {
+      onSlashFeedback(null);
+      setPersistentFeedback(false);
+    }
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setValue(e.target.value);
+    dismissFeedback(); // Dismiss persistent feedback when typing
     if (socket) {
       socket.emit("typing");
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
@@ -370,7 +508,7 @@ const MessageInput = React.forwardRef<
         setValue("");
         return;
       case "/help":
-        showFeedback(SLASH_HELP);
+        showFeedback(SLASH_HELP, true); // Persistent until dismissed
         setValue("");
         return;
       case "/anon":
@@ -390,6 +528,35 @@ const MessageInput = React.forwardRef<
         return;
       case "/mood":
         showFeedback(`Atmosphere: ${mood === "calm" ? "Calm" : mood === "intense" ? "Intense" : "Neutral"}`);
+        setValue("");
+        return;
+      case "/summon": {
+        const targetHandle = t.slice(7).trim();
+        if (!targetHandle) {
+          showFeedback("Usage: /summon handle (e.g. /summon alice)");
+          setValue("");
+          return;
+        }
+        if (socket) {
+          socket.emit("summon", targetHandle);
+          socket.once("summon-sent", (data: { target: string }) => showFeedback(`Summoning ${data.target}...`));
+          socket.once("summon-failed", () => showFeedback(`"${targetHandle}" isn't in the stream or has no handle.`));
+        }
+        setValue("");
+        return;
+      }
+      case "/away":
+        if (socket) {
+          socket.emit("away");
+          showFeedback("Stepping away. Others will see you're gone.");
+        }
+        setValue("");
+        return;
+      case "/back":
+        if (socket) {
+          socket.emit("back");
+          showFeedback("Welcome back.");
+        }
         setValue("");
         return;
       case "/shrug":
@@ -430,7 +597,7 @@ const MessageInput = React.forwardRef<
         navigator.clipboard
           ?.writeText(last.text)
           .then(() => {
-            socket?.emit("copy");
+            socket?.emit("copy", { messageId: last.id });
             showFeedback("Copied. Others will see you took a note.");
           })
           .catch(() => showFeedback("Could not copy."));

@@ -17,6 +17,7 @@ export type Message = {
   ts: number;
   leaving?: boolean;
   ghost?: boolean; // Messages you weren't present for - shown blurred
+  flagged?: boolean; // Message was moderated (bigotry masked)
 };
 
 const MAX_VISIBLE = 6; // Keep 6 messages, fade those beyond the newest 3

@@ -7,6 +7,7 @@ const { createServer } = require("http");
 const { Server } = require("socket.io");
 const Sentiment = require("sentiment");
 const redis = require("./lib/redis");
+const moderation = require("./lib/moderation");
 
 // Structured logger
 const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
@@ -53,10 +54,27 @@ const MOOD_INTENSE = "intense";
 const SIGILS = ["spiral", "eye", "triangle", "cross", "diamond"];
 const ROOM_TITLE = process.env.ROOM_TITLE || "the well";
 const MOOD_DECAY_MS = 3 * 60 * 1000;
+const SILENCE_THRESHOLD_MS = 30 * 1000; // 30 seconds for "settled silence"
 let lastMessageTs = 0;
+let lastActivityTs = 0; // Tracks typing too
 let moodDecayTimer = null;
+let silenceTimer = null;
+let currentSilenceState = false;
 const socketIdToIP = new Map(); // Track unique users by IP
+const socketFocused = new Map(); // Track who has tab focused
+const socketAway = new Map(); // Track who's "stepping away"
+const awayTimers = new Map(); // Auto-disconnect after prolonged away
 const typingTimers = new Map();
+const messageResonance = new Map(); // messageId -> copy count
+const RESONANCE_DECAY_MS = 5 * 60 * 1000; // 5 minutes
+
+// Presence Ghosts: track recently departed users
+const presenceGhosts = []; // { color, handle, leftAt }
+const GHOST_DURATION_MS = 3 * 60 * 1000; // 3 minutes
+const AWAY_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes before auto-disconnect when away
+
+// Banned IPs (in-memory, resets on restart - could persist to Redis)
+const bannedIPs = new Set();
 
 // Get client IP from socket (handles Cloudflare and other proxies)
 function getClientIP(socket) {
@@ -182,6 +200,94 @@ function broadcastPresence(io) {
   io.emit("presence", uniqueIPs);
 }
 
+// Get attention state - who's focused vs away vs stepping away
+function getAttentionState(io) {
+  const state = [];
+  for (const [socketId, focused] of socketFocused) {
+    const sock = io.sockets.sockets.get(socketId);
+    if (sock && sock.userColor) {
+      state.push({
+        color: sock.userColor,
+        handle: sock.userHandle || null,
+        focused: focused,
+        steppingAway: socketAway.get(socketId) || false,
+      });
+    }
+  }
+  return state;
+}
+
+function broadcastAttention(io) {
+  io.emit("attention", getAttentionState(io));
+}
+
+// Clean up old presence ghosts
+function cleanPresenceGhosts() {
+  const now = Date.now();
+  while (presenceGhosts.length > 0 && now - presenceGhosts[0].leftAt > GHOST_DURATION_MS) {
+    presenceGhosts.shift();
+  }
+}
+
+// Add a presence ghost when someone leaves
+function addPresenceGhost(color, handle) {
+  cleanPresenceGhosts();
+  presenceGhosts.push({ color, handle, leftAt: Date.now() });
+  // Keep max 10 ghosts
+  while (presenceGhosts.length > 10) {
+    presenceGhosts.shift();
+  }
+}
+
+// Get current presence ghosts with fade level (0-1)
+function getPresenceGhosts() {
+  cleanPresenceGhosts();
+  const now = Date.now();
+  return presenceGhosts.map((g) => ({
+    color: g.color,
+    handle: g.handle,
+    fade: Math.min(1, (now - g.leftAt) / GHOST_DURATION_MS),
+  }));
+}
+
+// Track message resonance (copy events)
+function addResonance(messageId) {
+  const current = messageResonance.get(messageId) || 0;
+  messageResonance.set(messageId, current + 1);
+  // Schedule cleanup
+  setTimeout(() => {
+    messageResonance.delete(messageId);
+  }, RESONANCE_DECAY_MS);
+  return current + 1;
+}
+
+function getResonance(messageId) {
+  return messageResonance.get(messageId) || 0;
+}
+
+function checkSilence(io) {
+  const now = Date.now();
+  const isSilent = now - lastActivityTs > SILENCE_THRESHOLD_MS;
+
+  if (isSilent && !currentSilenceState) {
+    currentSilenceState = true;
+    io.emit("silence", { settled: true, since: lastActivityTs });
+  } else if (!isSilent && currentSilenceState) {
+    currentSilenceState = false;
+    io.emit("silence", { settled: false });
+  }
+}
+
+function startSilenceTimer(io) {
+  if (silenceTimer) clearInterval(silenceTimer);
+  silenceTimer = setInterval(() => checkSilence(io), 5000); // Check every 5s
+}
+
+function recordActivity() {
+  lastActivityTs = Date.now();
+  currentSilenceState = false; // Immediately break silence locally
+}
+
 function startMoodDecayTimer(io) {
   if (moodDecayTimer) clearInterval(moodDecayTimer);
   moodDecayTimer = setInterval(async () => {
@@ -223,8 +329,19 @@ const io = new Server(httpServer, {
 });
 
 startMoodDecayTimer(io);
+startSilenceTimer(io);
 
 io.on("connection", (socket) => {
+  const clientIP = getClientIP(socket);
+
+  // Check if banned
+  if (bannedIPs.has(clientIP)) {
+    logger.info("Banned IP attempted connection", { ip: clientIP });
+    socket.emit("banned", { reason: "You have been banned." });
+    socket.disconnect(true);
+    return;
+  }
+
   logger.info("Client connected", { socketId: socket.id });
 
   socket.on("join", async (payload) => {
@@ -242,7 +359,9 @@ io.on("connection", (socket) => {
     const { color, handle, tag, sigil } = payload || {};
     const clientIP = getClientIP(socket);
     socketIdToIP.set(socket.id, clientIP);
+    socketFocused.set(socket.id, true); // Assume focused on join
     broadcastPresence(io);
+    broadcastAttention(io);
     logger.debug("User joined", { socketId: socket.id, ip: clientIP });
 
     // Validate inputs
@@ -270,6 +389,28 @@ io.on("connection", (socket) => {
     const mood = await computeCurrentMoodAsync();
     socket.emit("mood", mood);
     socket.emit("room-title", ROOM_TITLE);
+
+    // Send presence ghosts - faded dots of who was recently here
+    socket.emit("presence-ghosts", getPresenceGhosts());
+
+    // Send current silence state
+    socket.emit("silence", { settled: currentSilenceState, since: lastActivityTs });
+
+    // Send arrival vibe - instant read of the room
+    const uniqueIPs = new Set(socketIdToIP.values()).size;
+    const timeSinceActivity = lastActivityTs ? Math.floor((Date.now() - lastActivityTs) / 1000) : null;
+    let quietFor = null;
+    if (timeSinceActivity !== null) {
+      if (timeSinceActivity < 60) quietFor = `${timeSinceActivity}s`;
+      else if (timeSinceActivity < 3600) quietFor = `${Math.floor(timeSinceActivity / 60)}m`;
+      else quietFor = `${Math.floor(timeSinceActivity / 3600)}h`;
+    }
+    socket.emit("arrival-vibe", {
+      presence: uniqueIPs,
+      mood: computeCurrentMood(),
+      quietFor: quietFor,
+      hasGhosts: presenceGhosts.length > 0,
+    });
   });
 
   socket.on("message", async (payload) => {
@@ -290,7 +431,59 @@ io.on("connection", (socket) => {
     const trimmed = text.trim().slice(0, 500);
     if (!trimmed) return;
 
+    // Content moderation
+    const modResult = moderation.moderate(trimmed);
+
+    // Block links silently
+    if (!modResult.allowed && modResult.reason === "no-links") {
+      socket.emit("message-rejected", { reason: "Links are not allowed." });
+      logger.info("Link blocked", { socketId: socket.id });
+      return;
+    }
+
+    // Handle bigotry: mask, force-reveal, broadcast, ban
+    if (modResult.isBigotry) {
+      const userIP = getClientIP(socket);
+      logger.warn("Bigotry detected", {
+        socketId: socket.id,
+        ip: userIP,
+        original: trimmed,
+        masked: modResult.maskedText,
+      });
+
+      // Force reveal identity - they lose anonymity
+      const revealedHandle = socket.userHandle || `anon-${socket.userColor.slice(1, 4)}`;
+
+      // Broadcast the masked message WITH forced attribution
+      const msg = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        text: modResult.maskedText,
+        color: socket.userColor || "#7b5278",
+        handle: revealedHandle,
+        tag: socket.userTag || null,
+        sigil: socket.userSigil || null,
+        whisper: false,
+        ts: Date.now(),
+        flagged: true, // Mark as moderated
+      };
+
+      io.emit("message", msg);
+      io.emit("user-banned", {
+        color: socket.userColor,
+        handle: revealedHandle,
+        reason: "bigotry",
+      });
+
+      // Ban and disconnect
+      bannedIPs.add(userIP);
+      socket.emit("banned", { reason: "Bigotry is not tolerated." });
+      socket.disconnect(true);
+      return;
+    }
+
     lastMessageTs = Date.now();
+    recordActivity();
+    io.emit("silence", { settled: false }); // Immediately notify silence is broken
     const result = sentiment.analyze(trimmed);
     const energy = energyPenalty(trimmed);
     const effectiveScore = result.score - energy;
@@ -364,6 +557,8 @@ io.on("connection", (socket) => {
       return;
     }
 
+    recordActivity();
+    io.emit("silence", { settled: false }); // Typing breaks silence
     socket.broadcast.emit("typing", { color: socket.userColor, handle: socket.userHandle });
     // Auto-emit typing-stop after 5 seconds of no activity
     if (typingTimers.has(socket.id)) clearTimeout(typingTimers.get(socket.id));
@@ -383,21 +578,112 @@ io.on("connection", (socket) => {
 
   socket.on("ping", () => socket.emit("pong"));
 
-  socket.on("copy", () => {
+  // Attention tracking - focus/blur
+  socket.on("focus", () => {
+    socketFocused.set(socket.id, true);
+    broadcastAttention(io);
+  });
+
+  socket.on("blur", () => {
+    socketFocused.set(socket.id, false);
+    broadcastAttention(io);
+  });
+
+  // Affirmation - silent "I hear you" pulse
+  socket.on("affirm", (messageId) => {
+    if (!messageId || typeof messageId !== "string") return;
+    io.emit("affirmation", {
+      messageId,
+      color: socket.userColor || "#7b5278",
+    });
+  });
+
+  // Deliberate departure - "stepping away"
+  socket.on("away", () => {
+    socketAway.set(socket.id, true);
+    broadcastAttention(io);
+    io.emit("user-away", {
+      color: socket.userColor,
+      handle: socket.userHandle,
+    });
+    // Auto-disconnect after timeout
+    if (awayTimers.has(socket.id)) clearTimeout(awayTimers.get(socket.id));
+    awayTimers.set(socket.id, setTimeout(() => {
+      if (socketAway.get(socket.id)) {
+        socket.disconnect(true);
+      }
+    }, AWAY_TIMEOUT_MS));
+  });
+
+  socket.on("back", () => {
+    const wasAway = socketAway.get(socket.id);
+    socketAway.delete(socket.id);
+    if (awayTimers.has(socket.id)) {
+      clearTimeout(awayTimers.get(socket.id));
+      awayTimers.delete(socket.id);
+    }
+    if (wasAway) {
+      broadcastAttention(io);
+      io.emit("user-back", {
+        color: socket.userColor,
+        handle: socket.userHandle,
+      });
+    }
+  });
+
+  socket.on("copy", (payload) => {
+    const messageId = typeof payload === "object" ? payload?.messageId : null;
     io.emit("copy", {
       color: socket.userColor || "#7b5278",
       handle: socket.userHandle || null,
     });
+    // Track resonance if we know which message was copied
+    if (messageId) {
+      const resonance = addResonance(messageId);
+      io.emit("resonance", { messageId, count: resonance });
+    }
+  });
+
+  // Summoning: gently ping an idle user by handle
+  socket.on("summon", (target) => {
+    if (!target || typeof target !== "string") return;
+    const targetLower = target.toLowerCase().trim();
+    // Find socket with that handle
+    for (const [, s] of io.sockets.sockets) {
+      if (s.id !== socket.id && s.userHandle && s.userHandle.toLowerCase() === targetLower) {
+        s.emit("summoned", {
+          byColor: socket.userColor,
+          byHandle: socket.userHandle,
+        });
+        // Notify the summoner it worked
+        socket.emit("summon-sent", { target: s.userHandle });
+        return;
+      }
+    }
+    // Handle not found
+    socket.emit("summon-failed", { target, reason: "not-found" });
   });
 
   socket.on("disconnect", () => {
+    // Add to presence ghosts before removing
+    if (socket.userColor) {
+      addPresenceGhost(socket.userColor, socket.userHandle);
+      io.emit("presence-ghosts", getPresenceGhosts());
+    }
     socketIdToIP.delete(socket.id);
+    socketFocused.delete(socket.id);
+    socketAway.delete(socket.id);
+    if (awayTimers.has(socket.id)) {
+      clearTimeout(awayTimers.get(socket.id));
+      awayTimers.delete(socket.id);
+    }
     cleanupRateLimits(socket.id);
     if (typingTimers.has(socket.id)) {
       clearTimeout(typingTimers.get(socket.id));
       typingTimers.delete(socket.id);
     }
     broadcastPresence(io);
+    broadcastAttention(io);
   });
 });
 

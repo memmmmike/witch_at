@@ -98,11 +98,24 @@ export type CopyNotification = {
 
 export type ActivityLogEntry = {
   id: number;
-  type: "join" | "leave" | "reveal" | "presence" | "copy";
+  type: "join" | "leave" | "reveal" | "presence" | "copy" | "summon" | "banned" | "rejected";
   color?: string;
   handle?: string | null;
   message: string;
   ts: number;
+};
+
+export type PresenceGhost = {
+  color: string;
+  handle: string | null;
+  fade: number; // 0-1, how faded
+};
+
+export type AttentionState = {
+  color: string;
+  handle: string | null;
+  focused: boolean;
+  steppingAway?: boolean;
 };
 
 const MAX_ACTIVITY_LOG = 10;
@@ -116,6 +129,12 @@ type SocketContextValue = {
   someoneTyping: { color: string; handle: string | null } | null;
   roomTitle: string;
   activityLog: ActivityLogEntry[];
+  presenceGhosts: PresenceGhost[];
+  summoned: { byColor: string; byHandle: string | null } | null;
+  resonance: Map<string, number>; // messageId -> copy count
+  silenceSettled: boolean; // Comfortable silence after 30s of no activity
+  attention: AttentionState[]; // Who's focused vs away
+  affirmations: Map<string, string[]>; // messageId -> list of colors that affirmed
 };
 
 const SocketContext = createContext<SocketContextValue>({
@@ -127,9 +146,17 @@ const SocketContext = createContext<SocketContextValue>({
   someoneTyping: null,
   roomTitle: "the well",
   activityLog: [],
+  presenceGhosts: [],
+  summoned: null,
+  resonance: new Map(),
+  silenceSettled: false,
+  attention: [],
+  affirmations: new Map(),
 });
 
 const COPY_NOTIFICATION_MS = 5000;
+
+const SUMMON_DURATION_MS = 5000;
 
 export function SocketProvider({ children }: { children: React.ReactNode }) {
   const [connected, setConnected] = useState(false);
@@ -140,6 +167,12 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   const [someoneTyping, setSomeoneTyping] = useState<{ color: string; handle: string | null } | null>(null);
   const [roomTitle, setRoomTitle] = useState("the well");
   const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
+  const [presenceGhosts, setPresenceGhosts] = useState<PresenceGhost[]>([]);
+  const [summoned, setSummoned] = useState<{ byColor: string; byHandle: string | null } | null>(null);
+  const [resonance, setResonance] = useState<Map<string, number>>(new Map());
+  const [silenceSettled, setSilenceSettled] = useState(false);
+  const [attention, setAttention] = useState<AttentionState[]>([]);
+  const [affirmations, setAffirmations] = useState<Map<string, string[]>>(new Map());
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevPresenceRef = useRef<number>(0);
   const socketRef = useRef<ReturnType<typeof connectSocket> | null>(null);
@@ -150,7 +183,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   const updateHandleForColor = useStreamStore((s) => s.updateHandleForColor);
   const updateTagForColor = useStreamStore((s) => s.updateTagForColor);
   const updateSigilForColor = useStreamStore((s) => s.updateSigilForColor);
-  const { playMessageSound } = useSound();
+  const { playMessageSound, playJoinSound, playLeaveSound, playSummonSound } = useSound();
 
   const addActivityLog = (type: ActivityLogEntry["type"], message: string, color?: string, handle?: string | null) => {
     setActivityLog((prev) => {
@@ -250,8 +283,10 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       const prev = prevPresenceRef.current;
       if (count > prev && prev > 0) {
         addActivityLog("join", "Someone entered the stream");
+        playJoinSound();
       } else if (count < prev && prev > 0) {
         addActivityLog("leave", "Someone left the stream");
+        playLeaveSound();
       }
       prevPresenceRef.current = count;
       setPresence(count);
@@ -319,6 +354,106 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       console.warn("[Witchat] Server is shutting down");
     });
 
+    // Presence Ghosts: faint traces of who was recently here
+    sock.on("presence-ghosts", (ghosts: PresenceGhost[]) => {
+      setPresenceGhosts(Array.isArray(ghosts) ? ghosts : []);
+    });
+
+    // Message Resonance: track copy counts per message
+    sock.on("resonance", (payload: { messageId: string; count: number }) => {
+      setResonance((prev) => {
+        const next = new Map(prev);
+        next.set(payload.messageId, payload.count);
+        return next;
+      });
+    });
+
+    // Summoning: being gently pinged back
+    sock.on("summoned", (payload: { byColor: string; byHandle: string | null }) => {
+      setSummoned(payload);
+      playSummonSound();
+      const name = payload.byHandle || "Someone";
+      addActivityLog("summon", `${name} is thinking of you`, payload.byColor, payload.byHandle);
+      setTimeout(() => setSummoned(null), SUMMON_DURATION_MS);
+    });
+
+    // Moderation events
+    sock.on("message-rejected", (payload: { reason: string }) => {
+      addActivityLog("rejected", payload.reason);
+    });
+
+    sock.on("banned", (payload: { reason: string }) => {
+      addActivityLog("banned", `You have been banned: ${payload.reason}`);
+    });
+
+    sock.on("user-banned", (payload: { color: string; handle: string; reason: string }) => {
+      addActivityLog("banned", `${payload.handle} was banned for ${payload.reason}`, payload.color, payload.handle);
+    });
+
+    // Comfortable silence
+    sock.on("silence", (payload: { settled: boolean }) => {
+      setSilenceSettled(payload.settled);
+    });
+
+    // Arrival vibe - instant room read on join
+    sock.on("arrival-vibe", (payload: { presence: number; mood: string; quietFor: string | null; hasGhosts: boolean }) => {
+      let vibe = `${payload.presence} here`;
+      if (payload.mood !== "neutral") vibe += `, ${payload.mood}`;
+      if (payload.quietFor) vibe += `, quiet for ${payload.quietFor}`;
+      if (payload.hasGhosts) vibe += `, traces linger`;
+      addActivityLog("presence", vibe);
+    });
+
+    // Attention state - who's focused vs away
+    sock.on("attention", (state: AttentionState[]) => {
+      setAttention(Array.isArray(state) ? state : []);
+    });
+
+    // Track visibility and emit focus/blur
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        sock.emit("focus");
+      } else {
+        sock.emit("blur");
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    // Deliberate departure events
+    sock.on("user-away", (payload: { color: string; handle: string | null }) => {
+      const name = payload.handle || "Someone";
+      addActivityLog("leave", `${name} is stepping away`, payload.color, payload.handle);
+    });
+
+    sock.on("user-back", (payload: { color: string; handle: string | null }) => {
+      const name = payload.handle || "Someone";
+      addActivityLog("join", `${name} returned`, payload.color, payload.handle);
+    });
+
+    // Affirmations - silent pulses on messages
+    sock.on("affirmation", (payload: { messageId: string; color: string }) => {
+      setAffirmations((prev) => {
+        const next = new Map(prev);
+        const existing = next.get(payload.messageId) || [];
+        next.set(payload.messageId, [...existing, payload.color]);
+        return next;
+      });
+      // Clear after animation (1.5s)
+      setTimeout(() => {
+        setAffirmations((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(payload.messageId) || [];
+          const updated = existing.slice(1); // Remove oldest
+          if (updated.length === 0) {
+            next.delete(payload.messageId);
+          } else {
+            next.set(payload.messageId, updated);
+          }
+          return next;
+        });
+      }, 1500);
+    });
+
     return () => {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       sock.off("connect");
@@ -336,8 +471,21 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       sock.off("copy");
       sock.off("rate-limited");
       sock.off("server-shutdown");
+      sock.off("presence-ghosts");
+      sock.off("resonance");
+      sock.off("summoned");
+      sock.off("message-rejected");
+      sock.off("banned");
+      sock.off("user-banned");
+      sock.off("silence");
+      sock.off("arrival-vibe");
+      sock.off("attention");
+      sock.off("affirmation");
+      sock.off("user-away");
+      sock.off("user-back");
+      document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [addMessage, setStream, clearStream, updateHandleForColor, updateTagForColor, updateSigilForColor]);
+  }, [addMessage, setStream, clearStream, updateHandleForColor, updateTagForColor, updateSigilForColor, playJoinSound, playLeaveSound, playSummonSound]);
 
   // Apply mood to document body for Context Engine (atmosphere)
   useEffect(() => {
@@ -346,7 +494,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   }, [mood]);
 
   return (
-    <SocketContext.Provider value={{ connected, mood, identity, copyNotifications, presence, someoneTyping, roomTitle, activityLog }}>
+    <SocketContext.Provider value={{ connected, mood, identity, copyNotifications, presence, someoneTyping, roomTitle, activityLog, presenceGhosts, summoned, resonance, silenceSettled, attention, affirmations }}>
       {children}
     </SocketContext.Provider>
   );
