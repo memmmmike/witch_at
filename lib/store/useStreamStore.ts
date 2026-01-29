@@ -16,6 +16,7 @@ export type Message = {
   whisper?: boolean;
   ts: number;
   leaving?: boolean;
+  ghost?: boolean; // Messages you weren't present for - shown blurred
 };
 
 const MAX_VISIBLE = 6; // Keep 6 messages, fade those beyond the newest 3

@@ -263,9 +263,10 @@ io.on("connection", (socket) => {
       sigil: socket.userSigil,
     });
 
-    // Orality: new users don't get previous messages (like joining a conversation in progress)
-    // Existing users who refresh will restore from sessionStorage on the client side
-    socket.emit("stream", []);
+    // Send recent messages as "ghosts" - blurred remnants of conversation
+    // New users see shapes and colors but can't read the text
+    recentMessagesCache = await redis.getMessages(MAX_MESSAGES);
+    socket.emit("ghosts", recentMessagesCache);
     const mood = await computeCurrentMoodAsync();
     socket.emit("mood", mood);
     socket.emit("room-title", ROOM_TITLE);

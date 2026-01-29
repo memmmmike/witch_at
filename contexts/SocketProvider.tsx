@@ -275,6 +275,22 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
         }
       }
     });
+    sock.on("ghosts", (messages: Parameters<typeof setStream>[0]) => {
+      // Ghost messages: blurred remnants of conversation you weren't present for
+      const list = Array.isArray(messages) ? messages : [];
+      if (list.length > 0) {
+        // Check if we have our own messages in sessionStorage (soft refresh)
+        const restored = loadStream();
+        if (restored?.length) {
+          // User is returning, show their messages normally
+          setStream(restored.map((m) => ({ ...m, leaving: false } as Parameters<typeof setStream>[0][number])));
+          sessionStorage.removeItem(STREAM_STORAGE_KEY);
+        } else {
+          // New user or hard refresh, show ghosts
+          setStream(list.map((m) => ({ ...m, leaving: false, ghost: true })));
+        }
+      }
+    });
     sock.on("mood", (m: Mood) => setMood(m));
     sock.on("message", (msg: Parameters<typeof addMessage>[0]) => {
       addMessage(msg);
@@ -313,6 +329,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       sock.off("typing");
       sock.off("typing-stop");
       sock.off("stream");
+      sock.off("ghosts");
       sock.off("mood");
       sock.off("message");
       sock.off("identity-revealed");

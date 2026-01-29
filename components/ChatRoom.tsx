@@ -236,11 +236,13 @@ function StreamMessage({
 }) {
   const [relativeTime, setRelativeTime] = useState(() => formatRelativeTime(message.ts));
   const duration = reducedMotion ? 0 : leaving ? 0.5 : 0.4;
-  const noBlur = reducedMotion;
+  const isGhost = message.ghost === true;
 
   // Fade settings based on fadeLevel (0 = fully visible, 1-3 = progressively faded)
-  const fadeOpacity = fadeLevel === 0 ? 1 : Math.max(0.1, 1 - fadeLevel * 0.3);
-  const fadeBlur = fadeLevel === 0 ? 0 : fadeLevel * 3; // 0, 3, 6, 9px blur
+  // Ghosts get extra heavy blur
+  const ghostBlur = isGhost ? 8 : 0;
+  const fadeOpacity = isGhost ? 0.5 : fadeLevel === 0 ? 1 : Math.max(0.1, 1 - fadeLevel * 0.3);
+  const fadeBlur = ghostBlur + (fadeLevel === 0 ? 0 : fadeLevel * 3); // 0, 3, 6, 9px blur + ghost blur
 
   // Update timestamp every 10 seconds
   useEffect(() => {
@@ -266,23 +268,24 @@ function StreamMessage({
       onAnimationComplete={() => {
         if (leaving) onDissipateEnd();
       }}
-      className={`glass rounded-xl border border-witch-plum-900/40 ${message.whisper ? "px-3 py-2 opacity-75" : "px-4 py-3"}`}
+      className={`glass rounded-xl border border-witch-plum-900/40 ${message.whisper ? "px-3 py-2 opacity-75" : "px-4 py-3"} ${isGhost ? "select-none" : ""}`}
       data-message
+      title={isGhost ? "You weren't here for this" : undefined}
     >
       <div className="flex items-baseline gap-2 flex-wrap">
         <span
           className="inline-block w-3 h-3 rounded-full shrink-0"
-          style={{ backgroundColor: message.color }}
+          style={{ backgroundColor: message.color, filter: isGhost ? "none" : undefined }}
         />
-        {message.sigil && (
+        {message.sigil && !isGhost && (
           <span style={{ color: message.color }} title={message.sigil}>
             <SigilIcon sigil={message.sigil} color="currentColor" size={14} />
           </span>
         )}
-        {message.tag && (
+        {message.tag && !isGhost && (
           <span className="text-[10px] text-witch-sage-500/80 italic">{message.tag}</span>
         )}
-        {message.handle && (
+        {message.handle && !isGhost && (
           <span className="text-xs font-mono text-witch-plum-400/95">{message.handle}</span>
         )}
         <span
@@ -294,9 +297,11 @@ function StreamMessage({
         >
           {message.text}
         </span>
-        <span className="text-[10px] text-witch-sage-500/50 ml-auto shrink-0" title={new Date(message.ts).toLocaleString()}>
-          {relativeTime}
-        </span>
+        {!isGhost && (
+          <span className="text-[10px] text-witch-sage-500/50 ml-auto shrink-0" title={new Date(message.ts).toLocaleString()}>
+            {relativeTime}
+          </span>
+        )}
       </div>
     </motion.div>
   );
