@@ -2,57 +2,63 @@
 
 Ephemeral messaging that mimics **digital orality** — chat as a spoken stream, not a documented archive. Aesthetic: techno-occult, dark, liquid, atmospheric.
 
-## Tech stack
+## Philosophy
 
-- **Framework:** Next.js 14+ (App Router, TypeScript)
+Like oral tradition, conversations exist in the moment. New users joining don't receive prior context — they walk into a conversation already in progress. Messages fade like memories, with only the most recent staying sharp.
+
+## Features
+
+- **The Stream (Rule of Three)** — Latest 3 messages are fully visible; older ones blur and fade progressively
+- **Identity (The Glamour)** — Anonymous by default (random color + sigil). Optionally reveal handle and tag
+- **Context Engine** — Sentiment analysis shifts room atmosphere (calm / neutral / intense)
+- **Activity Log** — See joins, leaves, reveals, and who's taking notes
+- **Transparent Copying** — Others see when you copy text (taking a note)
+- **Orality** — New users start fresh; existing users keep context on refresh
+- **Mobile Responsive** — Touch-friendly, works as PWA
+
+## Tech Stack
+
+- **Framework:** Next.js 16 (App Router, TypeScript)
 - **Styling:** Tailwind CSS (obsidian/purple palette)
-- **Animations:** Framer Motion (fade in, dissipate out)
-- **Real-time:** Socket.io (custom server)
-- **State:** Zustand (client message stream)
-- **Logic:** In-memory only (no DB); optional Redis later
+- **Animations:** Framer Motion
+- **Real-time:** Socket.io
+- **State:** Zustand
+- **Persistence:** Redis (optional, falls back to in-memory)
 
-## MVP features
+## Run Locally
 
-1. **The Stream (Rule of Three)** — Only the latest 3 messages are shown. When a 4th arrives, the oldest dissipates (blur + fade out).
-2. **Identity (The Glamour)** — Anonymous by default (random hex color). Toggle "Reveal Identity" to set a text handle.
-3. **Context Engine (Atmosphere)** — Sentiment analysis on the server; room background gradient shifts by mood (calm / neutral / intense).
+```bash
+cp .env.local.example .env.local
+npm install
+npm run dev
+```
 
-## Run locally
+Opens at [http://localhost:3000](http://localhost:3000) with Socket server on port 4001.
 
-Next.js and the Socket.io server run **separately** so dev gets clean HMR (no 404 hot-update / full reloads).
+## Production
 
-1. **First time:** copy env example and install deps.
+```bash
+NEXT_PUBLIC_SOCKET_URL=https://your-domain.com npm run build
+npm start
+```
 
-   ```bash
-   cp .env.local.example .env.local
-   npm install
-   ```
+Or use the systemd services for persistent deployment.
 
-2. **Dev:** one command runs both Next (port 3000) and Socket (port 4001).
+## Roadmap
 
-   ```bash
-   npm run dev
-   ```
+### Near-term
+- **Visible DMs (Crosstalk)** — DM participants visible, text obscured to others
+- **Multiple Rooms** — Discoverable and secret rooms for scaling
+- **Topic Subscriptions** — Follow hashtags/keywords for highlighted messages
 
-3. Open [http://localhost:3000](http://localhost:3000). The app connects to the Socket server at `NEXT_PUBLIC_SOCKET_URL` (default `http://localhost:4001`).
+### Future
+- **Presence Ghosts** — Faded traces of recently departed users
+- **Ephemeral Voice Notes** — Audio that plays once, no replay
+- **Message Resonance** — Popular messages linger longer organically
+- **Ambient Soundscape** — Audio cues for presence, typing, mood
+- **Summoning** — Gently ping idle users back
+- **Time-bound Rooms** — Rooms that only exist during certain hours
 
-To run Next and Socket in **separate terminals** instead:
+## License
 
-- `npm run dev:next` — Next.js only (port 3000)
-- `npm run dev:socket` — Socket server only (port 4001)
-
-## Scripts
-
-- `npm run dev` — Next dev + Socket server (recommended)
-- `npm run dev:next` — Next.js only
-- `npm run dev:socket` — Socket server only
-- `npm run build` — Build Next.js
-- `npm start` — Production: Next + Socket (run after `npm run build`)
-
-## Project layout
-
-- `app/` — Next.js App Router (layout, page, globals)
-- `components/` — ChatRoom, Glamour (identity), StreamMessage
-- `contexts/` — SocketProvider (socket + mood + identity)
-- `lib/` — socket client, Zustand stream store
-- `socket-server.js` — Standalone Socket.io server (presence, mood, sentiment)
+MIT
