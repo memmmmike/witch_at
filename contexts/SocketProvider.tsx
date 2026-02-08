@@ -118,6 +118,35 @@ export type AttentionState = {
   steppingAway?: boolean;
 };
 
+export type RoomInfo = {
+  id: string;
+  title: string;
+  secret: boolean;
+};
+
+export type RoomListItem = {
+  id: string;
+  title: string;
+  presence: number;
+  lastActivity: number;
+};
+
+export type CrosstalkParticipant = {
+  color: string;
+  handle: string | null;
+};
+
+export type DMMessage = {
+  id: string;
+  text: string;
+  color: string;
+  handle: string | null;
+  sigil: string | null;
+  targetColor: string;
+  targetHandle: string | null;
+  ts: number;
+};
+
 const MAX_ACTIVITY_LOG = 10;
 
 type SocketContextValue = {
@@ -135,6 +164,13 @@ type SocketContextValue = {
   silenceSettled: boolean; // Comfortable silence after 30s of no activity
   attention: AttentionState[]; // Who's focused vs away
   affirmations: Map<string, string[]>; // messageId -> list of colors that affirmed
+  // Room management
+  currentRoom: RoomInfo | null;
+  roomList: RoomListItem[];
+  // DMs (Crosstalk)
+  activeCrosstalk: CrosstalkParticipant[] | null; // Who's DMing in the room
+  dmMessages: DMMessage[]; // DMs for current user
+  dmTyping: { color: string; handle: string | null } | null;
 };
 
 const SocketContext = createContext<SocketContextValue>({
@@ -152,6 +188,11 @@ const SocketContext = createContext<SocketContextValue>({
   silenceSettled: false,
   attention: [],
   affirmations: new Map(),
+  currentRoom: null,
+  roomList: [],
+  activeCrosstalk: null,
+  dmMessages: [],
+  dmTyping: null,
 });
 
 const COPY_NOTIFICATION_MS = 5000;
@@ -173,7 +214,13 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   const [silenceSettled, setSilenceSettled] = useState(false);
   const [attention, setAttention] = useState<AttentionState[]>([]);
   const [affirmations, setAffirmations] = useState<Map<string, string[]>>(new Map());
+  const [currentRoom, setCurrentRoom] = useState<RoomInfo | null>(null);
+  const [roomList, setRoomList] = useState<RoomListItem[]>([]);
+  const [activeCrosstalk, setActiveCrosstalk] = useState<CrosstalkParticipant[] | null>(null);
+  const [dmMessages, setDmMessages] = useState<DMMessage[]>([]);
+  const [dmTyping, setDmTyping] = useState<{ color: string; handle: string | null } | null>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dmTypingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevPresenceRef = useRef<number>(0);
   const socketRef = useRef<ReturnType<typeof connectSocket> | null>(null);
   const clearStreamOnJoinRef = useRef(false);
@@ -454,8 +501,64 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       }, 1500);
     });
 
+    // Room management events
+    sock.on("room-joined", (payload: RoomInfo) => {
+      setCurrentRoom(payload);
+      // Clear stream when switching rooms
+      clearStream();
+      setDmMessages([]);
+      setActiveCrosstalk(null);
+    });
+
+    sock.on("room-list", (list: RoomListItem[]) => {
+      setRoomList(Array.isArray(list) ? list : []);
+    });
+
+    sock.on("room-created", (payload: { roomId: string; title: string; secret: boolean }) => {
+      addActivityLog("presence", `Created room: ${payload.title}`);
+    });
+
+    sock.on("room-create-failed", (payload: { reason: string }) => {
+      addActivityLog("rejected", `Failed to create room: ${payload.reason}`);
+    });
+
+    sock.on("room-switch-failed", (payload: { reason: string }) => {
+      addActivityLog("rejected", `Failed to switch room: ${payload.reason}`);
+    });
+
+    // DM (Crosstalk) events
+    sock.on("dm-received", (msg: DMMessage) => {
+      setDmMessages((prev) => [...prev.slice(-49), msg]); // Keep last 50 DMs
+    });
+
+    sock.on("crosstalk", (payload: { participants: CrosstalkParticipant[]; ts: number }) => {
+      setActiveCrosstalk(payload.participants);
+      // Auto-clear after 5 seconds
+      setTimeout(() => {
+        setActiveCrosstalk((current) => {
+          if (current === payload.participants) return null;
+          return current;
+        });
+      }, 5000);
+    });
+
+    sock.on("crosstalk-ended", () => {
+      setActiveCrosstalk(null);
+    });
+
+    sock.on("dm-typing", (payload: { color: string; handle: string | null }) => {
+      setDmTyping(payload);
+      if (dmTypingTimeoutRef.current) clearTimeout(dmTypingTimeoutRef.current);
+      dmTypingTimeoutRef.current = setTimeout(() => setDmTyping(null), 3000);
+    });
+
+    sock.on("dm-failed", (payload: { reason: string }) => {
+      addActivityLog("rejected", `DM failed: ${payload.reason}`);
+    });
+
     return () => {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      if (dmTypingTimeoutRef.current) clearTimeout(dmTypingTimeoutRef.current);
       sock.off("connect");
       sock.off("disconnect");
       sock.off("identity");
@@ -483,6 +586,16 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       sock.off("affirmation");
       sock.off("user-away");
       sock.off("user-back");
+      sock.off("room-joined");
+      sock.off("room-list");
+      sock.off("room-created");
+      sock.off("room-create-failed");
+      sock.off("room-switch-failed");
+      sock.off("dm-received");
+      sock.off("crosstalk");
+      sock.off("crosstalk-ended");
+      sock.off("dm-typing");
+      sock.off("dm-failed");
       document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [addMessage, setStream, clearStream, updateHandleForColor, updateTagForColor, updateSigilForColor, playJoinSound, playLeaveSound, playSummonSound]);
@@ -494,7 +607,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   }, [mood]);
 
   return (
-    <SocketContext.Provider value={{ connected, mood, identity, copyNotifications, presence, someoneTyping, roomTitle, activityLog, presenceGhosts, summoned, resonance, silenceSettled, attention, affirmations }}>
+    <SocketContext.Provider value={{ connected, mood, identity, copyNotifications, presence, someoneTyping, roomTitle, activityLog, presenceGhosts, summoned, resonance, silenceSettled, attention, affirmations, currentRoom, roomList, activeCrosstalk, dmMessages, dmTyping }}>
       {children}
     </SocketContext.Provider>
   );

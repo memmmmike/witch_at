@@ -52,7 +52,8 @@ const MOOD_NEUTRAL = "neutral";
 const MOOD_CALM = "calm";
 const MOOD_INTENSE = "intense";
 const SIGILS = ["spiral", "eye", "triangle", "cross", "diamond"];
-const ROOM_TITLE = process.env.ROOM_TITLE || "the well";
+const DEFAULT_ROOM_ID = "main";
+const DEFAULT_ROOM_TITLE = process.env.ROOM_TITLE || "the well";
 const MOOD_DECAY_MS = 3 * 60 * 1000;
 const SILENCE_THRESHOLD_MS = 30 * 1000; // 30 seconds for "settled silence"
 let lastMessageTs = 0;
@@ -67,6 +68,74 @@ const awayTimers = new Map(); // Auto-disconnect after prolonged away
 const typingTimers = new Map();
 const messageResonance = new Map(); // messageId -> copy count
 const RESONANCE_DECAY_MS = 5 * 60 * 1000; // 5 minutes
+
+// Room management
+const rooms = new Map(); // roomId -> { title, secret, createdAt, messages, sentiment, lastActivity, presence ghosts }
+const socketToRoom = new Map(); // socketId -> roomId
+
+// Active DM conversations (crosstalk) - visible to room but text obscured
+const activeDMs = new Map(); // `${color1}:${color2}` sorted -> { participants: [color1, color2], lastActivity }
+
+function getRoomId(roomIdOrSlug) {
+  // Normalize room ID: lowercase, alphanumeric + hyphens only
+  if (!roomIdOrSlug || typeof roomIdOrSlug !== "string") return DEFAULT_ROOM_ID;
+  const normalized = roomIdOrSlug.toLowerCase().trim().replace(/[^a-z0-9-]/g, "").slice(0, 32);
+  return normalized || DEFAULT_ROOM_ID;
+}
+
+function getOrCreateRoom(roomId, options = {}) {
+  if (!rooms.has(roomId)) {
+    rooms.set(roomId, {
+      id: roomId,
+      title: options.title || (roomId === DEFAULT_ROOM_ID ? DEFAULT_ROOM_TITLE : roomId),
+      secret: options.secret || false,
+      createdAt: Date.now(),
+      messages: [],
+      sentiment: [],
+      lastActivity: Date.now(),
+      lastMessageTs: 0,
+      silenceState: false,
+      presenceGhosts: [],
+    });
+    logger.info("Room created", { roomId, secret: options.secret || false });
+  }
+  return rooms.get(roomId);
+}
+
+function getRoomPresence(io, roomId) {
+  const room = io.sockets.adapter.rooms.get(roomId);
+  if (!room) return 0;
+  const ips = new Set();
+  for (const socketId of room) {
+    const ip = socketIdToIP.get(socketId);
+    if (ip) ips.add(ip);
+  }
+  return ips.size;
+}
+
+function broadcastToRoom(io, roomId, event, data) {
+  io.to(roomId).emit(event, data);
+}
+
+function getRoomList() {
+  const publicRooms = [];
+  for (const [id, room] of rooms) {
+    if (!room.secret) {
+      publicRooms.push({
+        id: room.id,
+        title: room.title,
+        presence: 0, // Will be filled in by caller
+        lastActivity: room.lastActivity,
+      });
+    }
+  }
+  return publicRooms;
+}
+
+// DM key is sorted colors to ensure consistency
+function getDMKey(color1, color2) {
+  return [color1, color2].sort().join(":");
+}
 
 // Presence Ghosts: track recently departed users
 const presenceGhosts = []; // { color, handle, leftAt }
@@ -195,17 +264,26 @@ async function computeCurrentMoodAsync() {
   return computeCurrentMood(history);
 }
 
-function broadcastPresence(io) {
-  const uniqueIPs = new Set(socketIdToIP.values()).size;
-  io.emit("presence", uniqueIPs);
+function broadcastPresence(io, roomId = null) {
+  if (roomId) {
+    // Broadcast to specific room
+    const presence = getRoomPresence(io, roomId);
+    io.to(roomId).emit("presence", presence);
+  } else {
+    // Legacy: broadcast global presence (for backward compat during transition)
+    const uniqueIPs = new Set(socketIdToIP.values()).size;
+    io.emit("presence", uniqueIPs);
+  }
 }
 
 // Get attention state - who's focused vs away vs stepping away
-function getAttentionState(io) {
+function getAttentionState(io, roomId = null) {
   const state = [];
   for (const [socketId, focused] of socketFocused) {
     const sock = io.sockets.sockets.get(socketId);
     if (sock && sock.userColor) {
+      // If roomId specified, only include users in that room
+      if (roomId && socketToRoom.get(socketId) !== roomId) continue;
       state.push({
         color: sock.userColor,
         handle: sock.userHandle || null,
@@ -217,33 +295,43 @@ function getAttentionState(io) {
   return state;
 }
 
-function broadcastAttention(io) {
-  io.emit("attention", getAttentionState(io));
-}
-
-// Clean up old presence ghosts
-function cleanPresenceGhosts() {
-  const now = Date.now();
-  while (presenceGhosts.length > 0 && now - presenceGhosts[0].leftAt > GHOST_DURATION_MS) {
-    presenceGhosts.shift();
+function broadcastAttention(io, roomId = null) {
+  if (roomId) {
+    io.to(roomId).emit("attention", getAttentionState(io, roomId));
+  } else {
+    io.emit("attention", getAttentionState(io));
   }
 }
 
-// Add a presence ghost when someone leaves
-function addPresenceGhost(color, handle) {
-  cleanPresenceGhosts();
-  presenceGhosts.push({ color, handle, leftAt: Date.now() });
-  // Keep max 10 ghosts
-  while (presenceGhosts.length > 10) {
-    presenceGhosts.shift();
+// Clean up old presence ghosts for a room
+function cleanPresenceGhosts(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  const now = Date.now();
+  while (room.presenceGhosts.length > 0 && now - room.presenceGhosts[0].leftAt > GHOST_DURATION_MS) {
+    room.presenceGhosts.shift();
   }
 }
 
-// Get current presence ghosts with fade level (0-1)
-function getPresenceGhosts() {
-  cleanPresenceGhosts();
+// Add a presence ghost when someone leaves a room
+function addPresenceGhost(color, handle, roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  cleanPresenceGhosts(roomId);
+  room.presenceGhosts.push({ color, handle, leftAt: Date.now() });
+  // Keep max 10 ghosts per room
+  while (room.presenceGhosts.length > 10) {
+    room.presenceGhosts.shift();
+  }
+}
+
+// Get current presence ghosts with fade level (0-1) for a room
+function getPresenceGhosts(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return [];
+  cleanPresenceGhosts(roomId);
   const now = Date.now();
-  return presenceGhosts.map((g) => ({
+  return room.presenceGhosts.map((g) => ({
     color: g.color,
     handle: g.handle,
     fade: Math.min(1, (now - g.leftAt) / GHOST_DURATION_MS),
@@ -265,36 +353,51 @@ function getResonance(messageId) {
   return messageResonance.get(messageId) || 0;
 }
 
-function checkSilence(io) {
+function checkSilence(io, roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
   const now = Date.now();
-  const isSilent = now - lastActivityTs > SILENCE_THRESHOLD_MS;
+  const isSilent = now - room.lastActivity > SILENCE_THRESHOLD_MS;
 
-  if (isSilent && !currentSilenceState) {
-    currentSilenceState = true;
-    io.emit("silence", { settled: true, since: lastActivityTs });
-  } else if (!isSilent && currentSilenceState) {
-    currentSilenceState = false;
-    io.emit("silence", { settled: false });
+  if (isSilent && !room.silenceState) {
+    room.silenceState = true;
+    io.to(roomId).emit("silence", { settled: true, since: room.lastActivity });
+  } else if (!isSilent && room.silenceState) {
+    room.silenceState = false;
+    io.to(roomId).emit("silence", { settled: false });
+  }
+}
+
+function checkAllRoomsSilence(io) {
+  for (const roomId of rooms.keys()) {
+    checkSilence(io, roomId);
   }
 }
 
 function startSilenceTimer(io) {
   if (silenceTimer) clearInterval(silenceTimer);
-  silenceTimer = setInterval(() => checkSilence(io), 5000); // Check every 5s
+  silenceTimer = setInterval(() => checkAllRoomsSilence(io), 5000); // Check every 5s
 }
 
-function recordActivity() {
-  lastActivityTs = Date.now();
-  currentSilenceState = false; // Immediately break silence locally
+function recordActivity(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  room.lastActivity = Date.now();
+  room.silenceState = false; // Immediately break silence locally
 }
 
 function startMoodDecayTimer(io) {
   if (moodDecayTimer) clearInterval(moodDecayTimer);
   moodDecayTimer = setInterval(async () => {
-    if (Date.now() - lastMessageTs > MOOD_DECAY_MS && sentimentHistoryCache.length > 0) {
-      await redis.addSentiment(0, MAX_SENTIMENT_HISTORY);
-      sentimentHistoryCache = await redis.getSentimentHistory(MAX_SENTIMENT_HISTORY);
-      io.emit("mood", computeCurrentMood());
+    const now = Date.now();
+    for (const [roomId, room] of rooms) {
+      if (now - room.lastMessageTs > MOOD_DECAY_MS && room.sentiment.length > 0) {
+        room.sentiment.push(0);
+        if (room.sentiment.length > MAX_SENTIMENT_HISTORY) {
+          room.sentiment.shift();
+        }
+        io.to(roomId).emit("mood", computeCurrentMood(room.sentiment));
+      }
     }
   }, 60 * 1000);
 }
@@ -303,6 +406,9 @@ const serverStartTime = Date.now();
 
 // Initialize Redis
 redis.initRedis();
+
+// Initialize default room
+getOrCreateRoom(DEFAULT_ROOM_ID, { title: DEFAULT_ROOM_TITLE, secret: false });
 
 const httpServer = createServer((req, res) => {
   // Health check endpoint
@@ -356,13 +462,10 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const { color, handle, tag, sigil } = payload || {};
+    const { color, handle, tag, sigil, roomId: requestedRoomId } = payload || {};
     const clientIP = getClientIP(socket);
     socketIdToIP.set(socket.id, clientIP);
     socketFocused.set(socket.id, true); // Assume focused on join
-    broadcastPresence(io);
-    broadcastAttention(io);
-    logger.debug("User joined", { socketId: socket.id, ip: clientIP });
 
     // Validate inputs
     const validatedColor = validateColor(color);
@@ -375,6 +478,29 @@ io.on("connection", (socket) => {
     socket.userTag = validatedTag;
     socket.userSigil = validatedSigil || SIGILS[Math.floor(Math.random() * SIGILS.length)];
 
+    // Join the specified room (or default)
+    const roomId = getRoomId(requestedRoomId);
+    const room = getOrCreateRoom(roomId);
+
+    // Leave any previous room
+    const prevRoomId = socketToRoom.get(socket.id);
+    if (prevRoomId && prevRoomId !== roomId) {
+      socket.leave(prevRoomId);
+      addPresenceGhost(socket.userColor, socket.userHandle, prevRoomId);
+      broadcastPresence(io, prevRoomId);
+      broadcastAttention(io, prevRoomId);
+      io.to(prevRoomId).emit("presence-ghosts", getPresenceGhosts(prevRoomId));
+    }
+
+    // Join new room
+    socket.join(roomId);
+    socketToRoom.set(socket.id, roomId);
+    socket.currentRoom = roomId;
+
+    broadcastPresence(io, roomId);
+    broadcastAttention(io, roomId);
+    logger.debug("User joined room", { socketId: socket.id, ip: clientIP, roomId });
+
     socket.emit("identity", {
       color: socket.userColor,
       handle: socket.userHandle,
@@ -382,23 +508,28 @@ io.on("connection", (socket) => {
       sigil: socket.userSigil,
     });
 
+    // Send room info
+    socket.emit("room-joined", {
+      roomId: room.id,
+      title: room.title,
+      secret: room.secret,
+    });
+
     // Send recent messages as "ghosts" - blurred remnants of conversation
     // New users see shapes and colors but can't read the text
-    recentMessagesCache = await redis.getMessages(MAX_MESSAGES);
-    socket.emit("ghosts", recentMessagesCache);
-    const mood = await computeCurrentMoodAsync();
-    socket.emit("mood", mood);
-    socket.emit("room-title", ROOM_TITLE);
+    socket.emit("ghosts", room.messages.slice(-MAX_MESSAGES));
+    socket.emit("mood", computeCurrentMood(room.sentiment));
+    socket.emit("room-title", room.title);
 
     // Send presence ghosts - faded dots of who was recently here
-    socket.emit("presence-ghosts", getPresenceGhosts());
+    socket.emit("presence-ghosts", getPresenceGhosts(roomId));
 
     // Send current silence state
-    socket.emit("silence", { settled: currentSilenceState, since: lastActivityTs });
+    socket.emit("silence", { settled: room.silenceState, since: room.lastActivity });
 
     // Send arrival vibe - instant read of the room
-    const uniqueIPs = new Set(socketIdToIP.values()).size;
-    const timeSinceActivity = lastActivityTs ? Math.floor((Date.now() - lastActivityTs) / 1000) : null;
+    const roomPresence = getRoomPresence(io, roomId);
+    const timeSinceActivity = room.lastActivity ? Math.floor((Date.now() - room.lastActivity) / 1000) : null;
     let quietFor = null;
     if (timeSinceActivity !== null) {
       if (timeSinceActivity < 60) quietFor = `${timeSinceActivity}s`;
@@ -406,10 +537,10 @@ io.on("connection", (socket) => {
       else quietFor = `${Math.floor(timeSinceActivity / 3600)}h`;
     }
     socket.emit("arrival-vibe", {
-      presence: uniqueIPs,
-      mood: computeCurrentMood(),
+      presence: roomPresence,
+      mood: computeCurrentMood(room.sentiment),
       quietFor: quietFor,
-      hasGhosts: presenceGhosts.length > 0,
+      hasGhosts: room.presenceGhosts.length > 0,
     });
   });
 
@@ -430,6 +561,9 @@ io.on("connection", (socket) => {
     if (!text || typeof text !== "string") return;
     const trimmed = text.trim().slice(0, 500);
     if (!trimmed) return;
+
+    const roomId = socketToRoom.get(socket.id) || DEFAULT_ROOM_ID;
+    const room = getOrCreateRoom(roomId);
 
     // Content moderation
     const modResult = moderation.moderate(trimmed);
@@ -454,7 +588,7 @@ io.on("connection", (socket) => {
       // Force reveal identity - they lose anonymity
       const revealedHandle = socket.userHandle || `anon-${socket.userColor.slice(1, 4)}`;
 
-      // Broadcast the masked message WITH forced attribution
+      // Broadcast the masked message WITH forced attribution (to room only)
       const msg = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
         text: modResult.maskedText,
@@ -467,8 +601,8 @@ io.on("connection", (socket) => {
         flagged: true, // Mark as moderated
       };
 
-      io.emit("message", msg);
-      io.emit("user-banned", {
+      io.to(roomId).emit("message", msg);
+      io.to(roomId).emit("user-banned", {
         color: socket.userColor,
         handle: revealedHandle,
         reason: "bigotry",
@@ -481,16 +615,18 @@ io.on("connection", (socket) => {
       return;
     }
 
-    lastMessageTs = Date.now();
-    recordActivity();
-    io.emit("silence", { settled: false }); // Immediately notify silence is broken
+    room.lastMessageTs = Date.now();
+    recordActivity(roomId);
+    io.to(roomId).emit("silence", { settled: false }); // Immediately notify silence is broken
     const result = sentiment.analyze(trimmed);
     const energy = energyPenalty(trimmed);
     const effectiveScore = result.score - energy;
 
-    // Store sentiment in Redis
-    await redis.addSentiment(effectiveScore, MAX_SENTIMENT_HISTORY);
-    sentimentHistoryCache = await redis.getSentimentHistory(MAX_SENTIMENT_HISTORY);
+    // Store sentiment in room
+    room.sentiment.push(effectiveScore);
+    if (room.sentiment.length > MAX_SENTIMENT_HISTORY) {
+      room.sentiment.shift();
+    }
 
     const msg = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
@@ -503,12 +639,14 @@ io.on("connection", (socket) => {
       ts: Date.now(),
     };
 
-    // Store message in Redis
-    await redis.addMessage(msg, MAX_MESSAGES);
-    recentMessagesCache = await redis.getMessages(MAX_MESSAGES);
+    // Store message in room
+    room.messages.push(msg);
+    if (room.messages.length > MAX_MESSAGES) {
+      room.messages.shift();
+    }
 
-    io.emit("message", msg);
-    io.emit("mood", computeCurrentMood());
+    io.to(roomId).emit("message", msg);
+    io.to(roomId).emit("mood", computeCurrentMood(room.sentiment));
   });
 
   socket.on("reveal", async (payload) => {
@@ -523,14 +661,19 @@ io.on("connection", (socket) => {
     if (validatedSigil) socket.userSigil = validatedSigil;
 
     const color = socket.userColor || "#7b5278";
+    const roomId = socketToRoom.get(socket.id) || DEFAULT_ROOM_ID;
+    const room = rooms.get(roomId);
 
-    // Update messages in Redis with new identity info
-    await redis.updateMessagesByColor(color, {
-      handle: socket.userHandle,
-      tag: socket.userTag,
-      sigil: socket.userSigil || null,
-    });
-    recentMessagesCache = await redis.getMessages(MAX_MESSAGES);
+    // Update messages in room with new identity info
+    if (room) {
+      for (const msg of room.messages) {
+        if (msg.color === color) {
+          msg.handle = socket.userHandle;
+          msg.tag = socket.userTag;
+          msg.sigil = socket.userSigil || null;
+        }
+      }
+    }
 
     socket.emit("identity", {
       color,
@@ -538,7 +681,7 @@ io.on("connection", (socket) => {
       tag: socket.userTag,
       sigil: socket.userSigil,
     });
-    io.emit("identity-revealed", {
+    io.to(roomId).emit("identity-revealed", {
       color,
       handle: socket.userHandle,
       tag: socket.userTag,
@@ -557,19 +700,21 @@ io.on("connection", (socket) => {
       return;
     }
 
-    recordActivity();
-    io.emit("silence", { settled: false }); // Typing breaks silence
-    socket.broadcast.emit("typing", { color: socket.userColor, handle: socket.userHandle });
+    const roomId = socketToRoom.get(socket.id) || DEFAULT_ROOM_ID;
+    recordActivity(roomId);
+    io.to(roomId).emit("silence", { settled: false }); // Typing breaks silence
+    socket.to(roomId).emit("typing", { color: socket.userColor, handle: socket.userHandle });
     // Auto-emit typing-stop after 5 seconds of no activity
     if (typingTimers.has(socket.id)) clearTimeout(typingTimers.get(socket.id));
     typingTimers.set(socket.id, setTimeout(() => {
-      socket.broadcast.emit("typing-stop", { color: socket.userColor });
+      socket.to(roomId).emit("typing-stop", { color: socket.userColor });
       typingTimers.delete(socket.id);
     }, 5000));
   });
 
   socket.on("typing-stop", () => {
-    socket.broadcast.emit("typing-stop", { color: socket.userColor });
+    const roomId = socketToRoom.get(socket.id) || DEFAULT_ROOM_ID;
+    socket.to(roomId).emit("typing-stop", { color: socket.userColor });
     if (typingTimers.has(socket.id)) {
       clearTimeout(typingTimers.get(socket.id));
       typingTimers.delete(socket.id);
@@ -581,18 +726,21 @@ io.on("connection", (socket) => {
   // Attention tracking - focus/blur
   socket.on("focus", () => {
     socketFocused.set(socket.id, true);
-    broadcastAttention(io);
+    const roomId = socketToRoom.get(socket.id) || DEFAULT_ROOM_ID;
+    broadcastAttention(io, roomId);
   });
 
   socket.on("blur", () => {
     socketFocused.set(socket.id, false);
-    broadcastAttention(io);
+    const roomId = socketToRoom.get(socket.id) || DEFAULT_ROOM_ID;
+    broadcastAttention(io, roomId);
   });
 
   // Affirmation - silent "I hear you" pulse
   socket.on("affirm", (messageId) => {
     if (!messageId || typeof messageId !== "string") return;
-    io.emit("affirmation", {
+    const roomId = socketToRoom.get(socket.id) || DEFAULT_ROOM_ID;
+    io.to(roomId).emit("affirmation", {
       messageId,
       color: socket.userColor || "#7b5278",
     });
@@ -601,8 +749,9 @@ io.on("connection", (socket) => {
   // Deliberate departure - "stepping away"
   socket.on("away", () => {
     socketAway.set(socket.id, true);
-    broadcastAttention(io);
-    io.emit("user-away", {
+    const roomId = socketToRoom.get(socket.id) || DEFAULT_ROOM_ID;
+    broadcastAttention(io, roomId);
+    io.to(roomId).emit("user-away", {
       color: socket.userColor,
       handle: socket.userHandle,
     });
@@ -623,8 +772,9 @@ io.on("connection", (socket) => {
       awayTimers.delete(socket.id);
     }
     if (wasAway) {
-      broadcastAttention(io);
-      io.emit("user-back", {
+      const roomId = socketToRoom.get(socket.id) || DEFAULT_ROOM_ID;
+      broadcastAttention(io, roomId);
+      io.to(roomId).emit("user-back", {
         color: socket.userColor,
         handle: socket.userHandle,
       });
@@ -633,46 +783,234 @@ io.on("connection", (socket) => {
 
   socket.on("copy", (payload) => {
     const messageId = typeof payload === "object" ? payload?.messageId : null;
-    io.emit("copy", {
+    const roomId = socketToRoom.get(socket.id) || DEFAULT_ROOM_ID;
+    io.to(roomId).emit("copy", {
       color: socket.userColor || "#7b5278",
       handle: socket.userHandle || null,
     });
     // Track resonance if we know which message was copied
     if (messageId) {
       const resonance = addResonance(messageId);
-      io.emit("resonance", { messageId, count: resonance });
+      io.to(roomId).emit("resonance", { messageId, count: resonance });
     }
   });
 
-  // Summoning: gently ping an idle user by handle
+  // Summoning: gently ping an idle user by handle (within same room)
   socket.on("summon", (target) => {
     if (!target || typeof target !== "string") return;
     const targetLower = target.toLowerCase().trim();
-    // Find socket with that handle
+    const roomId = socketToRoom.get(socket.id) || DEFAULT_ROOM_ID;
+    // Find socket with that handle in the same room
     for (const [, s] of io.sockets.sockets) {
       if (s.id !== socket.id && s.userHandle && s.userHandle.toLowerCase() === targetLower) {
-        s.emit("summoned", {
-          byColor: socket.userColor,
-          byHandle: socket.userHandle,
-        });
-        // Notify the summoner it worked
-        socket.emit("summon-sent", { target: s.userHandle });
-        return;
+        const targetRoomId = socketToRoom.get(s.id);
+        if (targetRoomId === roomId) {
+          s.emit("summoned", {
+            byColor: socket.userColor,
+            byHandle: socket.userHandle,
+          });
+          // Notify the summoner it worked
+          socket.emit("summon-sent", { target: s.userHandle });
+          return;
+        }
       }
     }
     // Handle not found
     socket.emit("summon-failed", { target, reason: "not-found" });
   });
 
+  // Room management
+  socket.on("list-rooms", () => {
+    const roomList = getRoomList().map((r) => ({
+      ...r,
+      presence: getRoomPresence(io, r.id),
+    }));
+    socket.emit("room-list", roomList);
+  });
+
+  socket.on("create-room", (payload) => {
+    const { title, secret } = payload || {};
+    if (!title || typeof title !== "string") {
+      socket.emit("room-create-failed", { reason: "Title required" });
+      return;
+    }
+    const sanitizedTitle = title.trim().slice(0, 64);
+    const roomId = getRoomId(sanitizedTitle.replace(/\s+/g, "-"));
+
+    if (rooms.has(roomId)) {
+      socket.emit("room-create-failed", { reason: "Room already exists" });
+      return;
+    }
+
+    getOrCreateRoom(roomId, { title: sanitizedTitle, secret: !!secret });
+    socket.emit("room-created", { roomId, title: sanitizedTitle, secret: !!secret });
+
+    // Broadcast updated room list to everyone (excluding secret rooms)
+    if (!secret) {
+      const roomList = getRoomList().map((r) => ({
+        ...r,
+        presence: getRoomPresence(io, r.id),
+      }));
+      io.emit("room-list", roomList);
+    }
+  });
+
+  socket.on("switch-room", (payload) => {
+    const { roomId: targetRoomId } = payload || {};
+    if (!targetRoomId || typeof targetRoomId !== "string") {
+      socket.emit("room-switch-failed", { reason: "Room ID required" });
+      return;
+    }
+
+    const roomId = getRoomId(targetRoomId);
+    const currentRoomId = socketToRoom.get(socket.id);
+
+    if (currentRoomId === roomId) {
+      // Already in this room
+      return;
+    }
+
+    // Leave current room
+    if (currentRoomId) {
+      socket.leave(currentRoomId);
+      addPresenceGhost(socket.userColor, socket.userHandle, currentRoomId);
+      broadcastPresence(io, currentRoomId);
+      broadcastAttention(io, currentRoomId);
+      io.to(currentRoomId).emit("presence-ghosts", getPresenceGhosts(currentRoomId));
+    }
+
+    // Join new room
+    const room = getOrCreateRoom(roomId);
+    socket.join(roomId);
+    socketToRoom.set(socket.id, roomId);
+    socket.currentRoom = roomId;
+
+    broadcastPresence(io, roomId);
+    broadcastAttention(io, roomId);
+
+    // Send room info
+    socket.emit("room-joined", {
+      roomId: room.id,
+      title: room.title,
+      secret: room.secret,
+    });
+
+    // Send room state
+    socket.emit("ghosts", room.messages.slice(-MAX_MESSAGES));
+    socket.emit("mood", computeCurrentMood(room.sentiment));
+    socket.emit("room-title", room.title);
+    socket.emit("presence-ghosts", getPresenceGhosts(roomId));
+    socket.emit("silence", { settled: room.silenceState, since: room.lastActivity });
+
+    // Send arrival vibe
+    const roomPresence = getRoomPresence(io, roomId);
+    const timeSinceActivity = room.lastActivity ? Math.floor((Date.now() - room.lastActivity) / 1000) : null;
+    let quietFor = null;
+    if (timeSinceActivity !== null) {
+      if (timeSinceActivity < 60) quietFor = `${timeSinceActivity}s`;
+      else if (timeSinceActivity < 3600) quietFor = `${Math.floor(timeSinceActivity / 60)}m`;
+      else quietFor = `${Math.floor(timeSinceActivity / 3600)}h`;
+    }
+    socket.emit("arrival-vibe", {
+      presence: roomPresence,
+      mood: computeCurrentMood(room.sentiment),
+      quietFor: quietFor,
+      hasGhosts: room.presenceGhosts.length > 0,
+    });
+  });
+
+  // DM (Crosstalk) - visible to room but text obscured
+  socket.on("dm", (payload) => {
+    const { targetColor, text } = payload || {};
+    if (!targetColor || !text || typeof text !== "string") return;
+    const trimmed = text.trim().slice(0, 500);
+    if (!trimmed) return;
+
+    const roomId = socketToRoom.get(socket.id) || DEFAULT_ROOM_ID;
+    const senderColor = socket.userColor;
+    const dmKey = getDMKey(senderColor, targetColor);
+
+    // Find target socket in the same room
+    let targetSocket = null;
+    for (const [, s] of io.sockets.sockets) {
+      if (s.userColor === targetColor && socketToRoom.get(s.id) === roomId) {
+        targetSocket = s;
+        break;
+      }
+    }
+
+    if (!targetSocket) {
+      socket.emit("dm-failed", { reason: "User not in room" });
+      return;
+    }
+
+    // Track active DM for visibility
+    activeDMs.set(dmKey, {
+      participants: [senderColor, targetColor],
+      lastActivity: Date.now(),
+    });
+
+    // Clean up old DMs after 30 seconds
+    setTimeout(() => {
+      const dm = activeDMs.get(dmKey);
+      if (dm && Date.now() - dm.lastActivity > 30000) {
+        activeDMs.delete(dmKey);
+        io.to(roomId).emit("crosstalk-ended", { participants: [senderColor, targetColor] });
+      }
+    }, 30000);
+
+    const msg = {
+      id: `dm-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      text: trimmed,
+      color: senderColor,
+      handle: socket.userHandle || null,
+      sigil: socket.userSigil || null,
+      targetColor: targetColor,
+      targetHandle: targetSocket.userHandle || null,
+      ts: Date.now(),
+    };
+
+    // Send full message to sender and recipient
+    socket.emit("dm-received", msg);
+    targetSocket.emit("dm-received", msg);
+
+    // Broadcast to room that DM is happening (crosstalk - visible but obscured)
+    io.to(roomId).emit("crosstalk", {
+      participants: [
+        { color: senderColor, handle: socket.userHandle },
+        { color: targetColor, handle: targetSocket.userHandle },
+      ],
+      ts: Date.now(),
+    });
+  });
+
+  // DM typing indicator
+  socket.on("dm-typing", (payload) => {
+    const { targetColor } = payload || {};
+    if (!targetColor) return;
+
+    const roomId = socketToRoom.get(socket.id) || DEFAULT_ROOM_ID;
+
+    // Find target socket
+    for (const [, s] of io.sockets.sockets) {
+      if (s.userColor === targetColor && socketToRoom.get(s.id) === roomId) {
+        s.emit("dm-typing", { color: socket.userColor, handle: socket.userHandle });
+        return;
+      }
+    }
+  });
+
   socket.on("disconnect", () => {
+    const roomId = socketToRoom.get(socket.id) || DEFAULT_ROOM_ID;
     // Add to presence ghosts before removing
     if (socket.userColor) {
-      addPresenceGhost(socket.userColor, socket.userHandle);
-      io.emit("presence-ghosts", getPresenceGhosts());
+      addPresenceGhost(socket.userColor, socket.userHandle, roomId);
+      io.to(roomId).emit("presence-ghosts", getPresenceGhosts(roomId));
     }
     socketIdToIP.delete(socket.id);
     socketFocused.delete(socket.id);
     socketAway.delete(socket.id);
+    socketToRoom.delete(socket.id);
     if (awayTimers.has(socket.id)) {
       clearTimeout(awayTimers.get(socket.id));
       awayTimers.delete(socket.id);
@@ -682,8 +1020,8 @@ io.on("connection", (socket) => {
       clearTimeout(typingTimers.get(socket.id));
       typingTimers.delete(socket.id);
     }
-    broadcastPresence(io);
-    broadcastAttention(io);
+    broadcastPresence(io, roomId);
+    broadcastAttention(io, roomId);
   });
 });
 
