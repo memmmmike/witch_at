@@ -12,6 +12,7 @@ import { ActivityLog } from "./ActivityLog";
 import { ContextualHints } from "./ContextualHints";
 import { Logo } from "./Logo";
 import { Feedback } from "./Feedback";
+import { Ambiance } from "./Ambiance";
 
 const RULE_OF_THREE = 3;
 const MAX_VISIBLE = 6; // Show up to 6 messages, blur those beyond 3
@@ -106,6 +107,7 @@ export function ChatRoom() {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-3 sm:p-6 relative">
+      <Ambiance />
       <Glamour />
       <ActivityLog />
       <ContextualHints />
