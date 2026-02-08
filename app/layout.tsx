@@ -21,8 +21,12 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: "Witchat — Ephemeral Stream",
+  title: "witch@ - Ephemeral Stream",
   description: "Digital orality. The stream, not the archive.",
+  icons: {
+    icon: "/favicon.png",
+    apple: "/favicon.png",
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
