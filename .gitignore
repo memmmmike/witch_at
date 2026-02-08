@@ -37,3 +37,4 @@ next-env.d.ts
 
 # Witchat single-instance lock
 .witchat-dev.lock
+.env.production
