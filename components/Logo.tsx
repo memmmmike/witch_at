@@ -11,7 +11,7 @@ export function Logo() {
       <button
         type="button"
         onClick={() => setShowAbout(true)}
-        className="absolute bottom-2 right-2 sm:bottom-4 sm:right-4 select-none cursor-pointer bg-transparent border-none p-0"
+        className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 select-none cursor-pointer bg-transparent border-none p-0"
         title="About witch@"
       >
         <span className="text-xs sm:text-sm tracking-wide text-witch-plum-400/30 font-mono hover:text-witch-plum-400/50 transition-colors">

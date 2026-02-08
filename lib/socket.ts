@@ -14,7 +14,8 @@ function getSocketUrl(): string {
   if (hostname === "localhost" || hostname === "127.0.0.1") {
     return `${protocol}//${hostname}:4001`;
   }
-  return process.env.NEXT_PUBLIC_SOCKET_URL || window.location.origin;
+  // For tunneled/production access, use the same origin (routing handled by tunnel/proxy)
+  return window.location.origin;
 }
 
 let socket: Socket | null = null;

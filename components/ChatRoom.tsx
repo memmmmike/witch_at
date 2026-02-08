@@ -11,6 +11,7 @@ import { SigilIcon } from "./SigilIcon";
 import { ActivityLog } from "./ActivityLog";
 import { ContextualHints } from "./ContextualHints";
 import { Logo } from "./Logo";
+import { Feedback } from "./Feedback";
 
 const RULE_OF_THREE = 3;
 const MAX_VISIBLE = 6; // Show up to 6 messages, blur those beyond 3
@@ -109,6 +110,7 @@ export function ChatRoom() {
       <ActivityLog />
       <ContextualHints />
       <Logo />
+      <Feedback />
       <div className="absolute top-2 left-2 sm:top-4 sm:left-4 flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-1 text-[10px] sm:text-xs text-witch-sage-500/80 max-w-[60%] sm:max-w-none">
         <span className="font-medium text-witch-plum-400/90">{roomTitle}</span>
         <span className="text-witch-sage-500/50 hidden sm:inline">·</span>
@@ -200,24 +202,7 @@ export function ChatRoom() {
           </motion.div>
         )}
       </AnimatePresence>
-      {someoneTyping ? (
-        <p className="absolute left-1/2 -translate-x-1/2 top-[calc(50%-5rem)] text-xs text-witch-sage-500/60 italic animate-pulse flex items-center gap-2">
-          <span
-            className="inline-block w-2 h-2 rounded-full"
-            style={{ backgroundColor: someoneTyping.color }}
-          />
-          {someoneTyping.handle ? (
-            <><span className="font-mono not-italic text-witch-plum-400/70">{someoneTyping.handle}</span> is speaking…</>
-          ) : (
-            <>Someone is speaking…</>
-          )}
-        </p>
-      ) : silenceSettled && presence > 1 ? (
-        <p className="absolute left-1/2 -translate-x-1/2 top-[calc(50%-5rem)] text-xs text-witch-sage-500/40 italic">
-          settled silence
-        </p>
-      ) : null}
-
+      
       <AnimatePresence>
         {isIdle && (
           <motion.div
@@ -307,6 +292,25 @@ export function ChatRoom() {
         feedbackDurationMs={SLASH_FEEDBACK_MS}
         disabled={!socket}
       />
+      {someoneTyping ? (
+        <p className="w-full max-w-lg mt-2 text-xs text-witch-sage-500/60 italic animate-pulse flex items-center gap-2">
+          <span
+            className="inline-block w-2 h-2 rounded-full"
+            style={{ backgroundColor: someoneTyping.color }}
+          />
+          {someoneTyping.handle ? (
+            <><span className="font-mono not-italic text-witch-plum-400/70">{someoneTyping.handle}</span> is speaking…</>
+          ) : (
+            <>Someone is speaking…</>
+          )}
+        </p>
+      ) : silenceSettled && presence > 1 ? (
+        <p className="w-full max-w-lg mt-2 text-xs text-witch-sage-500/40 italic">
+          settled silence
+        </p>
+      ) : (
+        <div className="h-6" />
+      )}
     </div>
   );
 }
