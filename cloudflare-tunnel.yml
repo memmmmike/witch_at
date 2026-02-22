@@ -1,0 +1,29 @@
+tunnel: 54e85aa7-7bd4-4ab8-8d08-dad6d36f3951
+credentials-file: /home/mlayug/.cloudflared/54e85aa7-7bd4-4ab8-8d08-dad6d36f3951.json
+
+ingress:
+  # SSH access for deployments
+  - hostname: ssh.0pon.com
+    service: ssh://localhost:22
+
+  # Socket.io server - Must come before frontend
+  - hostname: witchat.0pon.com
+    path: /api/socketio/*
+    service: http://localhost:4001
+    originRequest:
+      noHappyEyeballs: true
+      keepAliveConnections: 100
+      keepAliveTimeout: 90s
+      httpHostHeader: witchat.0pon.com
+
+  # Next.js frontend
+  - hostname: witchat.0pon.com
+    service: http://localhost:3000
+    originRequest:
+      noHappyEyeballs: true
+      keepAliveConnections: 100
+      keepAliveTimeout: 90s
+      httpHostHeader: witchat.0pon.com
+
+  # Catch-all (404)
+  - service: http_status:404

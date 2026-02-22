@@ -301,14 +301,14 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (typeof window !== "undefined" && process.env.NODE_ENV === "development") {
-      console.log("[Witchat] App at", window.location.origin);
+      console.log("[Witch@] App at", window.location.origin);
     }
     const sock = connectSocket();
     socketRef.current = sock;
 
     sock.on("connect", () => {
       if (process.env.NODE_ENV === "development") {
-        console.log("[Witchat] Socket connected");
+        console.log("[Witch@] Socket connected");
       }
       setConnected(true);
       clearStream();
@@ -323,7 +323,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     });
     sock.on("disconnect", () => setConnected(false));
     sock.on("connect_error", (err) => {
-      console.error("[Witchat] Socket connection failed:", err.message);
+      console.error("[Witch@] Socket connection failed:", err.message);
     });
     sock.on("identity", (payload: Identity) => {
       setIdentity(payload);
@@ -398,10 +398,10 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       addActivityLog("copy", `${name} took a note`, payload.color, payload.handle);
     });
     sock.on("rate-limited", (payload: { event: string; reason: string }) => {
-      console.warn("[Witchat] Rate limited:", payload.event, payload.reason);
+      console.warn("[Witch@] Rate limited:", payload.event, payload.reason);
     });
     sock.on("server-shutdown", () => {
-      console.warn("[Witchat] Server is shutting down");
+      console.warn("[Witch@] Server is shutting down");
     });
 
     // Presence Ghosts: faint traces of who was recently here

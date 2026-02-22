@@ -1,0 +1,14 @@
+[Unit]
+Description=Witchat Cloudflare Tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mlayug
+ExecStart=/usr/bin/cloudflared tunnel --config /home/mlayug/Documents/GitHub/witchat/cloudflare-tunnel.yml run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

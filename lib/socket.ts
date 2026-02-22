@@ -1,5 +1,5 @@
 /**
- * Socket.io client for Witchat.
+ * Socket.io client for Witch@.
  * Connects to the Socket server (separate process). Set NEXT_PUBLIC_SOCKET_URL in dev (.env.local).
  */
 
@@ -28,7 +28,7 @@ export function connectSocket(): Socket {
   if (socket?.connected) return socket;
   const url = getSocketUrl();
   if (typeof window !== "undefined" && process.env.NODE_ENV === "development") {
-    console.log("[Witchat] Connecting to socket at", url);
+    console.log("[Witch@] Connecting to socket at", url);
   }
   socket = io(url, {
     path: SOCKET_PATH,

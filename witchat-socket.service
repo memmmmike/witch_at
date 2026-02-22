@@ -1,0 +1,19 @@
+[Unit]
+Description=Witchat Socket.io Server
+After=network.target
+
+[Service]
+Type=simple
+User=mlayug
+Group=mlayug
+WorkingDirectory=/home/mlayug/Documents/GitHub/witchat
+Environment=SOCKET_PORT=4001
+Environment=CORS_ORIGIN=https://witchat.0pon.com
+Environment="ROOM_TITLE=the well"
+Environment=LOG_LEVEL=info
+ExecStart=/usr/bin/node socket-server.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

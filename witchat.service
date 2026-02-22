@@ -1,0 +1,19 @@
+[Unit]
+Description=Witchat Next.js
+After=network.target witchat-socket.service
+Requires=witchat-socket.service
+
+[Service]
+Type=simple
+User=mlayug
+Group=mlayug
+WorkingDirectory=/home/mlayug/Documents/GitHub/witchat
+Environment=NODE_ENV=production
+Environment=NEXT_PUBLIC_SOCKET_URL=https://witchat.0pon.com
+ExecStartPre=/usr/bin/npm run build
+ExecStart=/usr/bin/npx next start
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

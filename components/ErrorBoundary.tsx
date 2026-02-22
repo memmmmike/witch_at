@@ -23,7 +23,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
-    console.error("[Witchat] ErrorBoundary caught error:", error, errorInfo);
+    console.error("[Witch@] ErrorBoundary caught error:", error, errorInfo);
   }
 
   handleRetry = (): void => {

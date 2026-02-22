@@ -57,7 +57,7 @@ export async function POST(req: NextRequest) {
     // Create the issue with witch@ prefix
     const feedbackType = type || "feedback";
     const issueTitle = `[witch@] ${feedbackType}: ${title}`;
-    const issueDescription = `**Source:** witch@ (Witchat App)\n**Type:** ${feedbackType}\n\n---\n\n${description}`;
+    const issueDescription = `**Source:** Witch@\n**Type:** ${feedbackType}\n\n---\n\n${description}`;
 
     const createIssueQuery = `
       mutation CreateIssue($input: IssueCreateInput!) {

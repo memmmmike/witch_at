@@ -1,5 +1,5 @@
 /**
- * Witchat — Standalone Socket.io server.
+ * Witch@ — Standalone Socket.io server.
  * Run separately from Next.js so dev gets clean HMR. Client connects via NEXT_PUBLIC_SOCKET_URL.
  */
 
@@ -449,7 +449,7 @@ const httpServer = createServer((req, res) => {
     return;
   }
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Witchat Socket server");
+  res.end("Witch@ Socket server");
 });
 
 const io = new Server(httpServer, {
