@@ -573,6 +573,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     return () => {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       if (dmTypingTimeoutRef.current) clearTimeout(dmTypingTimeoutRef.current);
+      if (crosstalkTimeoutRef.current) clearTimeout(crosstalkTimeoutRef.current);
       sock.off("connect");
       sock.off("disconnect");
       sock.off("identity");

@@ -354,7 +354,7 @@ function getResonance(messageId) {
 // Issue #6: Extract shared room state sending logic to reduce duplication
 function sendRoomState(socket, io, room, roomId) {
   socket.emit("room-joined", {
-    roomId: room.id,
+    id: room.id, // Fix: match RoomInfo type (was "roomId")
     title: room.title,
     secret: room.secret,
   });
@@ -417,7 +417,7 @@ function recordActivity(roomId) {
 
 function startMoodDecayTimer(io) {
   if (moodDecayTimer) clearInterval(moodDecayTimer);
-  moodDecayTimer = setInterval(async () => {
+  moodDecayTimer = setInterval(() => {
     const now = Date.now();
     for (const [roomId, room] of rooms) {
       if (now - room.lastMessageTs > MOOD_DECAY_MS && room.sentiment.length > 0) {
@@ -508,7 +508,16 @@ io.on("connection", (socket) => {
     socket.userSigil = validatedSigil || SIGILS[Math.floor(Math.random() * SIGILS.length)];
 
     // Join the specified room (or default)
-    const roomId = getRoomId(requestedRoomId);
+    let roomId = getRoomId(requestedRoomId);
+
+    // Fix: Check if room exists; if not and at MAX_ROOMS, fall back to default
+    if (!rooms.has(roomId) && roomId !== DEFAULT_ROOM_ID) {
+      if (rooms.size >= MAX_ROOMS) {
+        roomId = DEFAULT_ROOM_ID;
+        logger.warn("MAX_ROOMS reached, falling back to default room", { requestedRoomId, socketId: socket.id });
+      }
+    }
+
     const room = getOrCreateRoom(roomId);
 
     // Leave any previous room
@@ -897,6 +906,16 @@ io.on("connection", (socket) => {
     // Delete the room
     const room = rooms.get(roomId);
     const wasSecret = room.secret;
+
+    // Fix: Clean up orphaned DM timers for this room
+    for (const [dmKey, timer] of dmCleanupTimers) {
+      if (dmKey.startsWith(`${roomId}:`)) {
+        clearTimeout(timer);
+        dmCleanupTimers.delete(dmKey);
+        activeDMs.delete(dmKey);
+      }
+    }
+
     rooms.delete(roomId);
     logger.info("Room deleted", { roomId });
 
@@ -1110,10 +1129,19 @@ function gracefulShutdown(signal) {
 
   // Clear all timers
   if (moodDecayTimer) clearInterval(moodDecayTimer);
+  if (silenceTimer) clearInterval(silenceTimer);
   for (const timer of typingTimers.values()) {
     clearTimeout(timer);
   }
   typingTimers.clear();
+  for (const timer of awayTimers.values()) {
+    clearTimeout(timer);
+  }
+  awayTimers.clear();
+  for (const timer of dmCleanupTimers.values()) {
+    clearTimeout(timer);
+  }
+  dmCleanupTimers.clear();
 
   // Close all socket connections gracefully
   io.close(async () => {
