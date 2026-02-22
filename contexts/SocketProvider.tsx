@@ -144,6 +144,7 @@ export type DMMessage = {
   handle: string | null;
   sigil: string | null;
   targetColor: string;
+  targetSocketId?: string; // Socket ID for unique DM targeting
   targetHandle: string | null;
   ts: number;
 };
@@ -543,13 +544,10 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
 
     sock.on("crosstalk", (payload: { participants: CrosstalkParticipant[]; ts: number }) => {
       setActiveCrosstalk(payload.participants);
-      // Issue #4: Clear previous timer before setting new one to prevent leaks
+      // Clear previous timer before setting new one to prevent leaks
       if (crosstalkTimeoutRef.current) clearTimeout(crosstalkTimeoutRef.current);
       crosstalkTimeoutRef.current = setTimeout(() => {
-        setActiveCrosstalk((current) => {
-          if (current === payload.participants) return null;
-          return current;
-        });
+        setActiveCrosstalk(null); // Clear after 5s of no activity
         crosstalkTimeoutRef.current = null;
       }, 5000);
     });

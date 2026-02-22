@@ -68,8 +68,8 @@ const rooms = new Map(); // roomId -> { title, secret, createdAt, messages, sent
 const socketToRoom = new Map(); // socketId -> roomId
 
 // Active DM conversations (crosstalk) - visible to room but text obscured
-const activeDMs = new Map(); // `${color1}:${color2}` sorted -> { participants: [color1, color2], lastActivity }
-const dmCleanupTimers = new Map(); // dmKey -> timer (Issue #5: avoid timer accumulation)
+const activeDMs = new Map(); // `${roomId}:${color1}:${color2}` (sorted colors) -> { participants, lastActivity }
+const dmCleanupTimers = new Map(); // dmKey -> timer (single timer per DM session)
 const MAX_ROOMS = 50; // Limit total rooms to prevent DoS (Issue #4)
 
 function getRoomId(roomIdOrSlug) {
@@ -109,10 +109,6 @@ function getRoomPresence(io, roomId) {
   return ips.size;
 }
 
-function broadcastToRoom(io, roomId, event, data) {
-  io.to(roomId).emit(event, data);
-}
-
 function getRoomList() {
   const publicRooms = [];
   for (const [id, room] of rooms) {
@@ -133,8 +129,7 @@ function getDMKey(color1, color2, roomId) {
   return `${roomId}:${[color1, color2].sort().join(":")}`;
 }
 
-// Presence Ghosts: track recently departed users
-const presenceGhosts = []; // { color, handle, leftAt }
+// Presence Ghosts: track recently departed users (per-room in room.presenceGhosts)
 const GHOST_DURATION_MS = 3 * 60 * 1000; // 3 minutes
 const AWAY_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes before auto-disconnect when away
 
@@ -1016,17 +1011,14 @@ io.on("connection", (socket) => {
       lastActivity: Date.now(),
     });
 
-    // Issue #5: Use single timer per DM session to avoid accumulation
+    // Single timer per DM session - clears 30s after last message
     if (dmCleanupTimers.has(dmKey)) {
       clearTimeout(dmCleanupTimers.get(dmKey));
     }
     dmCleanupTimers.set(dmKey, setTimeout(() => {
-      const dm = activeDMs.get(dmKey);
-      if (dm && Date.now() - dm.lastActivity > 30000) {
-        activeDMs.delete(dmKey);
-        dmCleanupTimers.delete(dmKey);
-        io.to(roomId).emit("crosstalk-ended", { participants: [senderColor, resolvedTargetColor] });
-      }
+      activeDMs.delete(dmKey);
+      dmCleanupTimers.delete(dmKey);
+      io.to(roomId).emit("crosstalk-ended", { participants: [senderColor, resolvedTargetColor] });
     }, 30000));
 
     const msg = {
@@ -1057,6 +1049,10 @@ io.on("connection", (socket) => {
 
   // DM typing indicator
   socket.on("dm-typing", (payload) => {
+    // Rate limit typing events (reuse typing limit)
+    const rateCheck = checkRateLimit(socket.id, "typing");
+    if (!rateCheck.allowed) return;
+
     const { targetColor, targetSocketId } = payload || {};
     if (!targetColor && !targetSocketId) return;
 
