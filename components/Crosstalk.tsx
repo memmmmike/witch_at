@@ -9,14 +9,15 @@ import { SigilIcon } from "./SigilIcon";
 export function CrosstalkIndicator() {
   const { activeCrosstalk, identity } = useSocket();
 
-  if (!activeCrosstalk || activeCrosstalk.length < 2) return null;
-
   // Check if current user is part of the crosstalk
-  const isParticipant = activeCrosstalk.some(p => p.color === identity?.color);
+  const isParticipant = activeCrosstalk?.some(p => p.color === identity?.color);
+  const showIndicator = activeCrosstalk && activeCrosstalk.length >= 2;
 
+  // Issue #8: Always render AnimatePresence with conditional child inside
   return (
     <AnimatePresence>
-      <motion.div
+      {showIndicator && (
+        <motion.div
         initial={{ opacity: 0, y: 4 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: 4 }}
@@ -37,23 +38,39 @@ export function CrosstalkIndicator() {
           {isParticipant ? "crosstalk..." : "whispering aside..."}
         </span>
       </motion.div>
+      )}
     </AnimatePresence>
   );
 }
 
+const DM_TYPING_DEBOUNCE_MS = 300; // Issue #7: Debounce DM typing
+
 export function DMPanel() {
   const { dmMessages, dmTyping, identity, attention } = useSocket();
   const [isOpen, setIsOpen] = useState(false);
-  const [selectedUser, setSelectedUser] = useState<{ color: string; handle: string | null } | null>(null);
+  const [selectedUser, setSelectedUser] = useState<{ color: string; handle: string | null; id?: string } | null>(null);
   const [inputValue, setInputValue] = useState("");
+  const [seenMessageIds, setSeenMessageIds] = useState<Set<string>>(new Set()); // Issue #9: Track seen messages
   const inputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Issue #7: Debounce timer
   const socket = getSocket();
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [dmMessages]);
+
+  // Issue #9: Mark messages as seen when viewing conversation
+  useEffect(() => {
+    if (selectedUser && filteredDMs.length > 0) {
+      const newSeen = new Set(seenMessageIds);
+      filteredDMs.forEach(m => newSeen.add(m.id));
+      if (newSeen.size !== seenMessageIds.size) {
+        setSeenMessageIds(newSeen);
+      }
+    }
+  }, [selectedUser, dmMessages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Filter DMs for selected user
   const filteredDMs = selectedUser
@@ -82,18 +99,35 @@ export function DMPanel() {
 
   const handleSendDM = () => {
     if (!inputValue.trim() || !selectedUser || !socket) return;
-    socket.emit("dm", { targetColor: selectedUser.color, text: inputValue.trim() });
+    // Issue #3: Use targetSocketId if available for unique identification
+    socket.emit("dm", {
+      targetColor: selectedUser.color,
+      targetSocketId: selectedUser.id,
+      text: inputValue.trim()
+    });
     setInputValue("");
   };
 
+  // Issue #7: Debounced typing handler
   const handleTyping = () => {
-    if (selectedUser && socket) {
-      socket.emit("dm-typing", { targetColor: selectedUser.color });
+    if (!selectedUser || !socket) return;
+
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
     }
+
+    typingTimeoutRef.current = setTimeout(() => {
+      socket.emit("dm-typing", {
+        targetColor: selectedUser.color,
+        targetSocketId: selectedUser.id
+      });
+      typingTimeoutRef.current = null;
+    }, DM_TYPING_DEBOUNCE_MS);
   };
 
+  // Issue #9: Proper unread count - only count unseen messages sent TO current user
   const unreadCount = dmMessages.filter(
-    (m) => m.targetColor === identity?.color && !selectedUser
+    (m) => m.targetColor === identity?.color && !seenMessageIds.has(m.id)
   ).length;
 
   return (
@@ -247,8 +281,8 @@ export function DMPanel() {
                     ) : (
                       usersInRoom.map((u) => (
                         <button
-                          key={u.color}
-                          onClick={() => setSelectedUser({ color: u.color, handle: u.handle })}
+                          key={u.id || u.color}
+                          onClick={() => setSelectedUser({ color: u.color, handle: u.handle, id: u.id })}
                           className="w-full px-3 py-2 flex items-center gap-2 hover:bg-witch-plum-900/30 rounded transition-colors"
                         >
                           <span

@@ -112,6 +112,7 @@ export type PresenceGhost = {
 };
 
 export type AttentionState = {
+  id?: string; // Socket ID for unique identification (Issue #3)
   color: string;
   handle: string | null;
   focused: boolean;

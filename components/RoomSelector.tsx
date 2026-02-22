@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useSocket, type RoomListItem } from "@/contexts/SocketProvider";
 import { getSocket } from "@/lib/socket";
@@ -11,7 +11,22 @@ export function RoomSelector() {
   const [showCreateRoom, setShowCreateRoom] = useState(false);
   const [newRoomTitle, setNewRoomTitle] = useState("");
   const [isSecret, setIsSecret] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const socket = getSocket();
+
+  // Click-outside handler to dismiss dropdown (Issue #10)
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+    if (isOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+      return () => document.removeEventListener("mousedown", handleClickOutside);
+    }
+  }, [isOpen]);
 
   const handleRoomClick = (roomId: string) => {
     if (roomId === currentRoom?.id) {
@@ -23,15 +38,31 @@ export function RoomSelector() {
   };
 
   const handleCreateRoom = () => {
-    if (!newRoomTitle.trim()) return;
+    if (!newRoomTitle.trim() || isCreating) return;
+    setIsCreating(true);
+
+    // Fix Issue #1: Match server's room ID derivation (spaces→hyphens first, then strip)
+    // Fix Issue #2: Wait for room-created before switching to avoid race condition
+    const onRoomCreated = (data: { roomId: string }) => {
+      socket?.off("room-created", onRoomCreated);
+      socket?.off("room-create-failed", onRoomFailed);
+      socket?.emit("switch-room", { roomId: data.roomId });
+      setNewRoomTitle("");
+      setIsSecret(false);
+      setShowCreateRoom(false);
+      setIsOpen(false);
+      setIsCreating(false);
+    };
+
+    const onRoomFailed = () => {
+      socket?.off("room-created", onRoomCreated);
+      socket?.off("room-create-failed", onRoomFailed);
+      setIsCreating(false);
+    };
+
+    socket?.on("room-created", onRoomCreated);
+    socket?.on("room-create-failed", onRoomFailed);
     socket?.emit("create-room", { title: newRoomTitle.trim(), secret: isSecret });
-    // Switch to the new room
-    const roomId = newRoomTitle.trim().toLowerCase().replace(/[^a-z0-9-]/g, "").replace(/\s+/g, "-");
-    socket?.emit("switch-room", { roomId });
-    setNewRoomTitle("");
-    setIsSecret(false);
-    setShowCreateRoom(false);
-    setIsOpen(false);
   };
 
   const handleRefreshRooms = () => {
@@ -44,7 +75,7 @@ export function RoomSelector() {
   };
 
   return (
-    <div className="relative">
+    <div className="relative" ref={dropdownRef}>
       <button
         onClick={() => {
           setIsOpen(!isOpen);
