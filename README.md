@@ -6,7 +6,7 @@
 
 Ephemeral messaging that mimics **digital orality** — chat as a spoken stream, not a documented archive.
 
-<!-- TODO: Add screenshot.png -->
+![Witch@ Screenshot](screenshot.png)
 
 ## Philosophy
 
