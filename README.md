@@ -1,4 +1,4 @@
-# Witchat
+# Witch@
 
 Ephemeral messaging that mimics **digital orality** — chat as a spoken stream, not a documented archive. Aesthetic: techno-occult, dark, liquid, atmospheric.
 
