@@ -56,12 +56,21 @@ export function DMPanel() {
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Issue #7: Debounce timer
   const socket = getSocket();
 
+  // Filter DMs for selected user (moved before useEffect that depends on it)
+  const filteredDMs = selectedUser
+    ? dmMessages.filter(
+        (m) =>
+          (m.color === selectedUser.color && m.targetColor === identity?.color) ||
+          (m.targetColor === selectedUser.color && m.color === identity?.color)
+      )
+    : [];
+
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [dmMessages]);
 
-  // Issue #9: Mark messages as seen when viewing conversation
+  // Mark messages as seen when viewing conversation
   useEffect(() => {
     if (selectedUser && filteredDMs.length > 0) {
       const newSeen = new Set(seenMessageIds);
@@ -70,16 +79,7 @@ export function DMPanel() {
         setSeenMessageIds(newSeen);
       }
     }
-  }, [selectedUser, dmMessages]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Filter DMs for selected user
-  const filteredDMs = selectedUser
-    ? dmMessages.filter(
-        (m) =>
-          (m.color === selectedUser.color && m.targetColor === identity?.color) ||
-          (m.targetColor === selectedUser.color && m.color === identity?.color)
-      )
-    : [];
+  }, [selectedUser, filteredDMs, seenMessageIds]);
 
   // Get unique DM participants (people who have messaged current user or been messaged by them)
   const dmParticipants = Array.from(
