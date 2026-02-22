@@ -1,6 +1,12 @@
 # Witch@
 
-Ephemeral messaging that mimics **digital orality** — chat as a spoken stream, not a documented archive. Aesthetic: techno-occult, dark, liquid, atmospheric.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
+[![Socket.io](https://img.shields.io/badge/Socket.io-Realtime-blue.svg)](https://socket.io/)
+
+Ephemeral messaging that mimics **digital orality** — chat as a spoken stream, not a documented archive.
+
+<!-- TODO: Add screenshot.png -->
 
 ## Philosophy
 
@@ -8,29 +14,32 @@ Like oral tradition, conversations exist in the moment. New users joining don't 
 
 ## Features
 
-- **The Stream (Rule of Three)** — Latest 3 messages are fully visible; older ones blur and fade progressively
-- **Identity (The Glamour)** — Anonymous by default (random color + sigil). Optionally reveal handle and tag
+- **The Stream (Rule of Three)** — Latest 3 messages are fully visible; older ones blur and fade
+- **Identity (The Glamour)** — Anonymous by default (random color + sigil). Optionally reveal yourself
 - **Context Engine** — Sentiment analysis shifts room atmosphere (calm / neutral / intense)
 - **Multiple Rooms** — Public and secret rooms with presence tracking
-- **Crosstalk (Visible DMs)** — DM participants visible to room, but text is private
-- **Activity Log** — See joins, leaves, reveals, and who's taking notes
-- **Transparent Copying** — Others see when you copy text (taking a note)
+- **Crosstalk (Visible DMs)** — Others see you're whispering, but not what you say
 - **Presence Ghosts** — Faded traces of recently departed users
 - **Message Resonance** — Copied messages glow with resonance
 - **Summoning** — Gently ping idle users back to the conversation
-- **Orality** — New users start fresh; existing users keep context on refresh
-- **Mobile Responsive** — Touch-friendly, works as PWA
 
-## Tech Stack
+## Roadmap
 
-- **Framework:** Next.js 16 (App Router, TypeScript)
-- **Styling:** Tailwind CSS (obsidian/purple palette)
-- **Animations:** Framer Motion
-- **Real-time:** Socket.io
-- **State:** Zustand
-- **Persistence:** Redis (optional, falls back to in-memory)
+- **Topic Subscriptions** — Follow hashtags/keywords for highlighted messages
+- **Ambient Soundscape** — Audio cues for typing and mood shifts
+- **Ephemeral Voice Notes** — Audio that plays once, no replay
+- **Time-bound Rooms** — Rooms that only exist during certain hours
 
-## Run Locally
+---
+
+<details>
+<summary><strong>Development</strong></summary>
+
+### Tech Stack
+
+Next.js 16 (App Router) · TypeScript · Tailwind CSS · Framer Motion · Socket.io · Zustand · Redis (optional)
+
+### Run Locally
 
 ```bash
 cp .env.local.example .env.local
@@ -38,27 +47,18 @@ npm install
 npm run dev
 ```
 
-Opens at [http://localhost:3000](http://localhost:3000) with Socket server on port 4001.
+Opens at [localhost:3000](http://localhost:3000) with Socket server on port 4001.
 
-## Production
+### Production
 
 ```bash
 NEXT_PUBLIC_SOCKET_URL=https://your-domain.com npm run build
 npm start
 ```
 
-Or use the systemd services for persistent deployment.
+Systemd service files included for persistent deployment.
 
-## Roadmap
-
-### Near-term
-- **Topic Subscriptions** — Follow hashtags/keywords for highlighted messages
-- **Ambient Soundscape** — Audio cues for typing and mood shifts
-
-### Future
-- **Ephemeral Voice Notes** — Audio that plays once, no replay
-- **Time-bound Rooms** — Rooms that only exist during certain hours
-- **Room Themes** — Custom atmospheres per room
+</details>
 
 ## License
 
