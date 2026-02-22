@@ -16,11 +16,9 @@ jobs:
           sudo mv cloudflared /usr/local/bin/
 
       - name: Setup SSH key
-        env:
-          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | base64 -d > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Configure SSH for Cloudflare Tunnel
