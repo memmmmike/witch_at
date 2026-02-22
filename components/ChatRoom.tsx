@@ -13,6 +13,8 @@ import { ContextualHints } from "./ContextualHints";
 import { Logo } from "./Logo";
 import { Feedback } from "./Feedback";
 import { Ambiance } from "./Ambiance";
+import { RoomSelector } from "./RoomSelector";
+import { CrosstalkIndicator } from "./Crosstalk";
 
 const RULE_OF_THREE = 3;
 const MAX_VISIBLE = 6; // Show up to 6 messages, blur those beyond 3
@@ -37,7 +39,7 @@ export function ChatRoom() {
   const messages = useStreamStore((s) => s.messages);
   const removeAfterDissipate = useStreamStore((s) => s.removeAfterDissipate);
   const clearStream = useStreamStore((s) => s.clearStream);
-  const { socket, connected, mood, copyNotifications, presence, someoneTyping, roomTitle, presenceGhosts, summoned, resonance, silenceSettled, attention, affirmations } = useSocket();
+  const { socket, connected, mood, copyNotifications, presence, someoneTyping, roomTitle, presenceGhosts, summoned, resonance, silenceSettled, attention, affirmations, activeCrosstalk } = useSocket();
   const isIdle = useIdle(IDLE_MS);
   const reducedMotion = useReducedMotion();
   const [slashFeedback, setSlashFeedback] = useState<string | null>(null);
@@ -114,7 +116,7 @@ export function ChatRoom() {
       <Logo />
       <Feedback />
       <div className="absolute top-2 left-2 sm:top-4 sm:left-4 flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-1 text-[10px] sm:text-xs text-witch-sage-500/80 max-w-[60%] sm:max-w-none">
-        <span className="font-medium text-witch-plum-400/90">{roomTitle}</span>
+        <RoomSelector />
         <span className="text-witch-sage-500/50 hidden sm:inline">·</span>
         <span className="flex items-center gap-1 sm:gap-2">
           <span className={`w-2 h-2 rounded-full ${connected ? "bg-witch-forest-500/90" : "bg-rose-600/70"}`} />
@@ -306,6 +308,10 @@ export function ChatRoom() {
             <>Someone is speaking…</>
           )}
         </p>
+      ) : activeCrosstalk ? (
+        <div className="w-full max-w-lg mt-2">
+          <CrosstalkIndicator />
+        </div>
       ) : silenceSettled && presence > 1 ? (
         <p className="w-full max-w-lg mt-2 text-xs text-witch-sage-500/40 italic">
           settled silence
