@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useSocket } from "@/contexts/SocketProvider";
 import { SigilIcon } from "./SigilIcon";
+import { DMPanel } from "./Crosstalk";
 
 const SOUND_KEY = "witchat_sound";
 const SIGILS = ["spiral", "eye", "triangle", "cross", "diamond"] as const;
@@ -57,11 +58,6 @@ export function Glamour() {
   return (
     <div className="absolute top-2 right-2 sm:top-4 sm:right-4 flex items-center gap-2 sm:gap-3">
       <div className="hidden sm:flex items-center gap-2">
-        <span
-          className="inline-block w-4 h-4 rounded-full border border-white/10 shrink-0"
-          style={{ backgroundColor: color }}
-          title="Your aura"
-        />
         {sigil && (
           <span className="text-witch-plum-400/80" style={{ color }} title={sigil}>
             <SigilIcon sigil={sigil} color="currentColor" size={16} />
@@ -78,11 +74,7 @@ export function Glamour() {
           </span>
         )}
       </div>
-      <span
-        className="sm:hidden inline-block w-4 h-4 rounded-full border border-white/10 shrink-0"
-        style={{ backgroundColor: color }}
-        title="Your aura"
-      />
+      <DMPanel />
       <button
         type="button"
         onClick={toggleSound}

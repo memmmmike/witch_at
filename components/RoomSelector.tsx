@@ -38,6 +38,11 @@ export function RoomSelector() {
     socket?.emit("list-rooms");
   };
 
+  const handleDeleteRoom = (e: React.MouseEvent, roomId: string) => {
+    e.stopPropagation();
+    socket?.emit("delete-room", { roomId });
+  };
+
   return (
     <div className="relative">
       <button
@@ -93,19 +98,37 @@ export function RoomSelector() {
                 <p className="text-xs text-witch-sage-500/60 p-3 text-center">No public rooms</p>
               ) : (
                 roomList.map((room: RoomListItem) => (
-                  <button
+                  <div
                     key={room.id}
-                    onClick={() => handleRoomClick(room.id)}
-                    className={`w-full px-3 py-2 text-left hover:bg-witch-plum-900/30 transition-colors flex items-center justify-between ${
+                    className={`w-full px-3 py-2 hover:bg-witch-plum-900/30 transition-colors flex items-center justify-between group ${
                       currentRoom?.id === room.id ? "bg-witch-plum-900/20" : ""
                     }`}
                   >
-                    <span className="text-xs text-witch-parchment/90 truncate">{room.title}</span>
-                    <span className="text-[10px] text-witch-sage-500/60 flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-witch-forest-500/70" />
-                      {room.presence}
-                    </span>
-                  </button>
+                    <button
+                      onClick={() => handleRoomClick(room.id)}
+                      className="flex-1 text-left"
+                    >
+                      <span className="text-xs text-witch-parchment/90 truncate">{room.title}</span>
+                    </button>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-witch-sage-500/60 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-witch-forest-500/70" />
+                        {room.presence}
+                      </span>
+                      {room.id !== "main" && (
+                        <button
+                          onClick={(e) => handleDeleteRoom(e, room.id)}
+                          disabled={room.presence > 0}
+                          className={`text-witch-sage-500/50 hover:text-red-400/80 transition-all ${room.presence > 0 ? "opacity-30 cursor-not-allowed" : ""}`}
+                          title={room.presence > 0 ? "Room must be empty to delete" : "Delete room"}
+                        >
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 ))
               )}
             </div>

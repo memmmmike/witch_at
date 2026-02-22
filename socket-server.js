@@ -855,6 +855,52 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("delete-room", (payload) => {
+    const { roomId: targetRoomId } = payload || {};
+    if (!targetRoomId || typeof targetRoomId !== "string") {
+      socket.emit("room-delete-failed", { reason: "Room ID required" });
+      return;
+    }
+
+    const roomId = getRoomId(targetRoomId);
+
+    // Can't delete the default room
+    if (roomId === DEFAULT_ROOM_ID) {
+      socket.emit("room-delete-failed", { reason: "Cannot delete the main room" });
+      return;
+    }
+
+    // Check if room exists
+    if (!rooms.has(roomId)) {
+      socket.emit("room-delete-failed", { reason: "Room not found" });
+      return;
+    }
+
+    // Check if room is empty
+    const presence = getRoomPresence(io, roomId);
+    if (presence > 0) {
+      socket.emit("room-delete-failed", { reason: "Room must be empty to delete" });
+      return;
+    }
+
+    // Delete the room
+    const room = rooms.get(roomId);
+    const wasSecret = room.secret;
+    rooms.delete(roomId);
+    logger.info("Room deleted", { roomId });
+
+    socket.emit("room-deleted", { roomId });
+
+    // Broadcast updated room list (if it was public)
+    if (!wasSecret) {
+      const roomList = getRoomList().map((r) => ({
+        ...r,
+        presence: getRoomPresence(io, r.id),
+      }));
+      io.emit("room-list", roomList);
+    }
+  });
+
   socket.on("switch-room", (payload) => {
     const { roomId: targetRoomId } = payload || {};
     if (!targetRoomId || typeof targetRoomId !== "string") {

@@ -14,7 +14,7 @@ import { Logo } from "./Logo";
 import { Feedback } from "./Feedback";
 import { Ambiance } from "./Ambiance";
 import { RoomSelector } from "./RoomSelector";
-import { CrosstalkIndicator, DMPanel } from "./Crosstalk";
+import { CrosstalkIndicator } from "./Crosstalk";
 
 const RULE_OF_THREE = 3;
 const MAX_VISIBLE = 6; // Show up to 6 messages, blur those beyond 3
@@ -115,10 +115,6 @@ export function ChatRoom() {
       <ContextualHints />
       <Logo />
       <Feedback />
-      {/* DM Panel trigger - positioned in top right */}
-      <div className="absolute top-2 right-2 sm:top-4 sm:right-4 flex items-center gap-2">
-        <DMPanel />
-      </div>
       <div className="absolute top-2 left-2 sm:top-4 sm:left-4 flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-1 text-[10px] sm:text-xs text-witch-sage-500/80 max-w-[60%] sm:max-w-none">
         <RoomSelector />
         <span className="text-witch-sage-500/50 hidden sm:inline">·</span>

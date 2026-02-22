@@ -526,6 +526,14 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       addActivityLog("rejected", `Failed to switch room: ${payload.reason}`);
     });
 
+    sock.on("room-deleted", (payload: { roomId: string }) => {
+      addActivityLog("presence", `Room deleted: ${payload.roomId}`);
+    });
+
+    sock.on("room-delete-failed", (payload: { reason: string }) => {
+      addActivityLog("rejected", `Failed to delete room: ${payload.reason}`);
+    });
+
     // DM (Crosstalk) events
     sock.on("dm-received", (msg: DMMessage) => {
       setDmMessages((prev) => [...prev.slice(-49), msg]); // Keep last 50 DMs
@@ -591,6 +599,8 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       sock.off("room-created");
       sock.off("room-create-failed");
       sock.off("room-switch-failed");
+      sock.off("room-deleted");
+      sock.off("room-delete-failed");
       sock.off("dm-received");
       sock.off("crosstalk");
       sock.off("crosstalk-ended");
