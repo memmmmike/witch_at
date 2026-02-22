@@ -222,6 +222,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   const [dmTyping, setDmTyping] = useState<{ color: string; handle: string | null } | null>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dmTypingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const crosstalkTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null); // Issue #4: Track crosstalk timer
   const prevPresenceRef = useRef<number>(0);
   const socketRef = useRef<ReturnType<typeof connectSocket> | null>(null);
   const clearStreamOnJoinRef = useRef(false);
@@ -542,16 +543,20 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
 
     sock.on("crosstalk", (payload: { participants: CrosstalkParticipant[]; ts: number }) => {
       setActiveCrosstalk(payload.participants);
-      // Auto-clear after 5 seconds
-      setTimeout(() => {
+      // Issue #4: Clear previous timer before setting new one to prevent leaks
+      if (crosstalkTimeoutRef.current) clearTimeout(crosstalkTimeoutRef.current);
+      crosstalkTimeoutRef.current = setTimeout(() => {
         setActiveCrosstalk((current) => {
           if (current === payload.participants) return null;
           return current;
         });
+        crosstalkTimeoutRef.current = null;
       }, 5000);
     });
 
     sock.on("crosstalk-ended", () => {
+      if (crosstalkTimeoutRef.current) clearTimeout(crosstalkTimeoutRef.current);
+      crosstalkTimeoutRef.current = null;
       setActiveCrosstalk(null);
     });
 

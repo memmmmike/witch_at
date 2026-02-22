@@ -45,9 +45,6 @@ const corsOpt = CORS_ORIGIN
 const sentiment = new Sentiment();
 const MAX_MESSAGES = 3;
 const MAX_SENTIMENT_HISTORY = 5;
-// In-memory caches (synced with Redis when available)
-let recentMessagesCache = [];
-let sentimentHistoryCache = [];
 const MOOD_NEUTRAL = "neutral";
 const MOOD_CALM = "calm";
 const MOOD_INTENSE = "intense";
@@ -56,11 +53,8 @@ const DEFAULT_ROOM_ID = "main";
 const DEFAULT_ROOM_TITLE = process.env.ROOM_TITLE || "the well";
 const MOOD_DECAY_MS = 3 * 60 * 1000;
 const SILENCE_THRESHOLD_MS = 30 * 1000; // 30 seconds for "settled silence"
-let lastMessageTs = 0;
-let lastActivityTs = 0; // Tracks typing too
 let moodDecayTimer = null;
 let silenceTimer = null;
-let currentSilenceState = false;
 const socketIdToIP = new Map(); // Track unique users by IP
 const socketFocused = new Map(); // Track who has tab focused
 const socketAway = new Map(); // Track who's "stepping away"
@@ -134,9 +128,9 @@ function getRoomList() {
   return publicRooms;
 }
 
-// DM key is sorted colors to ensure consistency
-function getDMKey(color1, color2) {
-  return [color1, color2].sort().join(":");
+// DM key is sorted colors + roomId to ensure consistency and room scoping (Issue #1)
+function getDMKey(color1, color2, roomId) {
+  return `${roomId}:${[color1, color2].sort().join(":")}`;
 }
 
 // Presence Ghosts: track recently departed users
@@ -933,6 +927,12 @@ io.on("connection", (socket) => {
       return;
     }
 
+    // Issue #2: Only allow switching to existing rooms or default room (no implicit creation)
+    if (!rooms.has(roomId) && roomId !== DEFAULT_ROOM_ID) {
+      socket.emit("room-switch-failed", { reason: "Room does not exist" });
+      return;
+    }
+
     // Leave current room
     if (currentRoomId) {
       socket.leave(currentRoomId);
@@ -942,7 +942,7 @@ io.on("connection", (socket) => {
       io.to(currentRoomId).emit("presence-ghosts", getPresenceGhosts(currentRoomId));
     }
 
-    // Join new room
+    // Join new room (getOrCreateRoom is safe here since we validated above)
     const room = getOrCreateRoom(roomId);
     socket.join(roomId);
     socketToRoom.set(socket.id, roomId);
@@ -989,7 +989,7 @@ io.on("connection", (socket) => {
     }
 
     const resolvedTargetColor = targetSocket.userColor;
-    const dmKey = getDMKey(senderColor, resolvedTargetColor);
+    const dmKey = getDMKey(senderColor, resolvedTargetColor, roomId);
 
     // Track active DM for visibility
     activeDMs.set(dmKey, {

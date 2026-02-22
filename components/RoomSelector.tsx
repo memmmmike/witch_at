@@ -41,24 +41,31 @@ export function RoomSelector() {
     if (!newRoomTitle.trim() || isCreating) return;
     setIsCreating(true);
 
-    // Fix Issue #1: Match server's room ID derivation (spaces→hyphens first, then strip)
-    // Fix Issue #2: Wait for room-created before switching to avoid race condition
-    const onRoomCreated = (data: { roomId: string }) => {
+    // Issue #3: Shared cleanup to prevent stuck state
+    const cleanup = () => {
       socket?.off("room-created", onRoomCreated);
       socket?.off("room-create-failed", onRoomFailed);
+      clearTimeout(timeoutId);
+      setIsCreating(false);
+    };
+
+    const onRoomCreated = (data: { roomId: string }) => {
+      cleanup();
       socket?.emit("switch-room", { roomId: data.roomId });
       setNewRoomTitle("");
       setIsSecret(false);
       setShowCreateRoom(false);
       setIsOpen(false);
-      setIsCreating(false);
     };
 
     const onRoomFailed = () => {
-      socket?.off("room-created", onRoomCreated);
-      socket?.off("room-create-failed", onRoomFailed);
-      setIsCreating(false);
+      cleanup();
     };
+
+    // Issue #3: 10-second timeout failsafe for disconnect scenarios
+    const timeoutId = setTimeout(() => {
+      cleanup();
+    }, 10000);
 
     socket?.on("room-created", onRoomCreated);
     socket?.on("room-create-failed", onRoomFailed);
