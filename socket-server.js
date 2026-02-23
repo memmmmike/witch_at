@@ -206,6 +206,14 @@ const HEX_COLOR_REGEX = /^#[0-9a-fA-F]{6}$/;
 const HANDLE_REGEX = /^[a-zA-Z0-9 ]{1,32}$/;
 const TAG_REGEX = /^[a-zA-Z0-9]{1,16}$/;
 
+// Hashtag extraction for topic subscriptions
+const HASHTAG_REGEX = /#[a-zA-Z0-9_]{1,32}/g;
+
+function extractHashtags(text) {
+  const matches = text.match(HASHTAG_REGEX);
+  return matches ? [...new Set(matches.map(t => t.toLowerCase()))] : [];
+}
+
 function validateColor(color) {
   if (!color || typeof color !== "string") return null;
   return HEX_COLOR_REGEX.test(color) ? color : null;
@@ -629,6 +637,9 @@ io.on("connection", (socket) => {
       room.sentiment.shift();
     }
 
+    // Extract hashtags for topic subscriptions
+    const hashtags = extractHashtags(trimmed);
+
     const msg = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       text: trimmed,
@@ -638,6 +649,7 @@ io.on("connection", (socket) => {
       sigil: socket.userSigil || null,
       whisper: whisper,
       ts: Date.now(),
+      hashtags: hashtags.length > 0 ? hashtags : undefined,
     };
 
     // Store message in room

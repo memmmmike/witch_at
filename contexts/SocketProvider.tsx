@@ -10,6 +10,9 @@ type Mood = "calm" | "neutral" | "intense";
 const IDENTITY_STORAGE_KEY = "witchat_identity";
 const STREAM_STORAGE_KEY = "witchat_stream";
 const CLIENT_ID_KEY = "witchat_client_id";
+const TOPICS_STORAGE_KEY = "witchat_topics";
+const TOPIC_SOUND_KEY = "witchat_topic_sound";
+const TOPIC_NOTIFY_KEY = "witchat_topic_notify";
 
 function getOrCreateClientId(): string {
   if (typeof window === "undefined") return "";
@@ -173,6 +176,15 @@ type SocketContextValue = {
   activeCrosstalk: CrosstalkParticipant[] | null; // Who's DMing in the room
   dmMessages: DMMessage[]; // DMs for current user
   dmTyping: { color: string; handle: string | null } | null;
+  // Topic subscriptions
+  topicSubscriptions: string[];
+  subscribeTopic: (topic: string) => void;
+  unsubscribeTopic: (topic: string) => void;
+  topicSoundEnabled: boolean;
+  setTopicSoundEnabled: (enabled: boolean) => void;
+  topicNotifyEnabled: boolean;
+  setTopicNotifyEnabled: (enabled: boolean) => Promise<boolean>;
+  topicToasts: Array<{ id: number; text: string; handle: string | null; topic: string }>;
 };
 
 const SocketContext = createContext<SocketContextValue>({
@@ -195,6 +207,14 @@ const SocketContext = createContext<SocketContextValue>({
   activeCrosstalk: null,
   dmMessages: [],
   dmTyping: null,
+  topicSubscriptions: [],
+  subscribeTopic: () => {},
+  unsubscribeTopic: () => {},
+  topicSoundEnabled: false,
+  setTopicSoundEnabled: () => {},
+  topicNotifyEnabled: false,
+  setTopicNotifyEnabled: async () => false,
+  topicToasts: [],
 });
 
 const COPY_NOTIFICATION_MS = 5000;
@@ -221,7 +241,28 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   const [activeCrosstalk, setActiveCrosstalk] = useState<CrosstalkParticipant[] | null>(null);
   const [dmMessages, setDmMessages] = useState<DMMessage[]>([]);
   const [dmTyping, setDmTyping] = useState<{ color: string; handle: string | null } | null>(null);
+  const [topicSubscriptions, setTopicSubscriptions] = useState<string[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const raw = localStorage.getItem(TOPICS_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  });
+  const [topicSoundEnabled, setTopicSoundEnabledState] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem(TOPIC_SOUND_KEY) === "true";
+  });
+  const [topicNotifyEnabled, setTopicNotifyEnabledState] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem(TOPIC_NOTIFY_KEY) === "true";
+  });
+  const [topicToasts, setTopicToasts] = useState<Array<{ id: number; text: string; handle: string | null; topic: string }>>([]);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Refs to access current values in socket handlers
+  const topicSubscriptionsRef = useRef(topicSubscriptions);
+  const topicSoundEnabledRef = useRef(topicSoundEnabled);
+  const topicNotifyEnabledRef = useRef(topicNotifyEnabled);
+  const identityRef = useRef(identity);
   const dmTypingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const crosstalkTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null); // Issue #4: Track crosstalk timer
   const prevPresenceRef = useRef<number>(0);
@@ -233,7 +274,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   const updateHandleForColor = useStreamStore((s) => s.updateHandleForColor);
   const updateTagForColor = useStreamStore((s) => s.updateTagForColor);
   const updateSigilForColor = useStreamStore((s) => s.updateSigilForColor);
-  const { playMessageSound, playJoinSound, playLeaveSound, playSummonSound } = useSound();
+  const { playMessageSound, playJoinSound, playLeaveSound, playSummonSound, playTopicSound } = useSound();
 
   const addActivityLog = (type: ActivityLogEntry["type"], message: string, color?: string, handle?: string | null) => {
     setActivityLog((prev) => {
@@ -380,6 +421,42 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     sock.on("message", (msg: Parameters<typeof addMessage>[0]) => {
       addMessage(msg);
       playMessageSound();
+
+      // Check for topic subscription matches (skip own messages)
+      const subs = topicSubscriptionsRef.current;
+      const myColor = identityRef.current?.color;
+      if (subs.length > 0 && msg.color !== myColor) {
+        const textLower = msg.text.toLowerCase();
+        const matchedTopic = subs.find(topic => textLower.includes(topic));
+        if (matchedTopic) {
+          // Toast notification
+          const toastId = Date.now();
+          setTopicToasts(prev => [...prev.slice(-4), {
+            id: toastId,
+            text: msg.text.slice(0, 50) + (msg.text.length > 50 ? "…" : ""),
+            handle: msg.handle,
+            topic: matchedTopic
+          }]);
+          setTimeout(() => {
+            setTopicToasts(prev => prev.filter(t => t.id !== toastId));
+          }, 5000);
+
+          // Sound notification (if enabled)
+          if (topicSoundEnabledRef.current) {
+            playTopicSound();
+          }
+
+          // Browser notification (if enabled and permitted)
+          if (topicNotifyEnabledRef.current && typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+            const sender = msg.handle || "Someone";
+            new Notification(`#${matchedTopic}`, {
+              body: `${sender}: ${msg.text.slice(0, 100)}`,
+              tag: `topic-${toastId}`,
+              silent: true
+            });
+          }
+        }
+      }
     });
     sock.on("identity-revealed", (payload: { color: string; handle: string | null; tag?: string | null; sigil?: string | null }) => {
       updateHandleForColor(payload.color, payload.handle);
@@ -613,7 +690,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       sock.off("dm-failed");
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [addMessage, setStream, clearStream, updateHandleForColor, updateTagForColor, updateSigilForColor, playJoinSound, playLeaveSound, playSummonSound]);
+  }, [addMessage, setStream, clearStream, updateHandleForColor, updateTagForColor, updateSigilForColor, playJoinSound, playLeaveSound, playSummonSound, playTopicSound]);
 
   // Apply mood to document body for Context Engine (atmosphere)
   useEffect(() => {
@@ -621,8 +698,60 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     document.body.classList.add(`mood-${mood}`);
   }, [mood]);
 
+  // Persist topic subscriptions to localStorage
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(TOPICS_STORAGE_KEY, JSON.stringify(topicSubscriptions));
+    topicSubscriptionsRef.current = topicSubscriptions;
+  }, [topicSubscriptions]);
+
+  // Keep refs in sync
+  useEffect(() => { topicSoundEnabledRef.current = topicSoundEnabled; }, [topicSoundEnabled]);
+  useEffect(() => { topicNotifyEnabledRef.current = topicNotifyEnabled; }, [topicNotifyEnabled]);
+  useEffect(() => { identityRef.current = identity; }, [identity]);
+
+  // Topic subscription helpers
+  const subscribeTopic = (topic: string) => {
+    const normalized = topic.toLowerCase().replace(/^#/, '');
+    setTopicSubscriptions(prev =>
+      prev.includes(normalized) ? prev : [...prev, normalized].slice(0, 20)
+    );
+  };
+
+  const unsubscribeTopic = (topic: string) => {
+    const normalized = topic.toLowerCase().replace(/^#/, '');
+    setTopicSubscriptions(prev => prev.filter(t => t !== normalized));
+  };
+
+  const setTopicSoundEnabled = (enabled: boolean) => {
+    setTopicSoundEnabledState(enabled);
+    if (typeof window !== "undefined") {
+      localStorage.setItem(TOPIC_SOUND_KEY, String(enabled));
+    }
+  };
+
+  const setTopicNotifyEnabled = async (enabled: boolean): Promise<boolean> => {
+    if (!enabled) {
+      setTopicNotifyEnabledState(false);
+      if (typeof window !== "undefined") {
+        localStorage.setItem(TOPIC_NOTIFY_KEY, "false");
+      }
+      return true;
+    }
+    // Request permission if enabling
+    if (typeof window !== "undefined" && "Notification" in window) {
+      const permission = await Notification.requestPermission();
+      if (permission === "granted") {
+        setTopicNotifyEnabledState(true);
+        localStorage.setItem(TOPIC_NOTIFY_KEY, "true");
+        return true;
+      }
+    }
+    return false;
+  };
+
   return (
-    <SocketContext.Provider value={{ connected, mood, identity, copyNotifications, presence, someoneTyping, roomTitle, activityLog, presenceGhosts, summoned, resonance, silenceSettled, attention, affirmations, currentRoom, roomList, activeCrosstalk, dmMessages, dmTyping }}>
+    <SocketContext.Provider value={{ connected, mood, identity, copyNotifications, presence, someoneTyping, roomTitle, activityLog, presenceGhosts, summoned, resonance, silenceSettled, attention, affirmations, currentRoom, roomList, activeCrosstalk, dmMessages, dmTyping, topicSubscriptions, subscribeTopic, unsubscribeTopic, topicSoundEnabled, setTopicSoundEnabled, topicNotifyEnabled, setTopicNotifyEnabled, topicToasts }}>
       {children}
     </SocketContext.Provider>
   );

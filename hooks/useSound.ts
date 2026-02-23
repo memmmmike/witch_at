@@ -128,5 +128,29 @@ export function useSound() {
     } catch (_) {}
   }, [getContext]);
 
-  return { playMessageSound, playJoinSound, playLeaveSound, playSummonSound, playTypingSound };
+  // Distinct chime for topic subscription matches (ignores global sound setting)
+  const playTopicSound = useCallback(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const ctx = ctxRef.current ?? new AudioContext();
+      ctxRef.current = ctx;
+      // Three-note ascending arpeggio
+      const notes = [523, 659, 784]; // C5, E5, G5
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = freq;
+        osc.type = "sine";
+        const startTime = ctx.currentTime + i * 0.08;
+        gain.gain.setValueAtTime(0.1, startTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.15);
+        osc.start(startTime);
+        osc.stop(startTime + 0.15);
+      });
+    } catch (_) {}
+  }, []);
+
+  return { playMessageSound, playJoinSound, playLeaveSound, playSummonSound, playTypingSound, playTopicSound };
 }

@@ -39,7 +39,7 @@ export function ChatRoom() {
   const messages = useStreamStore((s) => s.messages);
   const removeAfterDissipate = useStreamStore((s) => s.removeAfterDissipate);
   const clearStream = useStreamStore((s) => s.clearStream);
-  const { socket, connected, mood, copyNotifications, presence, someoneTyping, roomTitle, presenceGhosts, summoned, resonance, silenceSettled, attention, affirmations, activeCrosstalk } = useSocket();
+  const { socket, connected, mood, copyNotifications, presence, someoneTyping, roomTitle, presenceGhosts, summoned, resonance, silenceSettled, attention, affirmations, activeCrosstalk, topicSubscriptions, topicToasts } = useSocket();
   const isIdle = useIdle(IDLE_MS);
   const reducedMotion = useReducedMotion();
   const [slashFeedback, setSlashFeedback] = useState<string | null>(null);
@@ -115,6 +115,30 @@ export function ChatRoom() {
       <ContextualHints />
       <Logo />
       <Feedback />
+      {/* Topic subscription toasts */}
+      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 max-w-xs">
+        <AnimatePresence>
+          {topicToasts.map((toast) => (
+            <motion.div
+              key={toast.id}
+              initial={{ opacity: 0, x: 50, scale: 0.9 }}
+              animate={{ opacity: 1, x: 0, scale: 1 }}
+              exit={{ opacity: 0, x: 50, scale: 0.9 }}
+              transition={{ duration: 0.2 }}
+              className="glass rounded-lg border border-witch-amber-500/50 px-3 py-2 text-sm shadow-lg"
+            >
+              <div className="flex items-center gap-2 text-witch-amber-400 text-xs font-medium">
+                <span className="w-2 h-2 rounded-full bg-witch-amber-500" />
+                #{toast.topic}
+              </div>
+              <p className="text-witch-parchment/90 mt-1 text-xs">
+                {toast.handle && <span className="font-mono text-witch-plum-400">{toast.handle}: </span>}
+                {toast.text}
+              </p>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
       <div className="absolute top-2 left-2 sm:top-4 sm:left-4 flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-1 text-[10px] sm:text-xs text-witch-sage-500/80 max-w-[60%] sm:max-w-none">
         <RoomSelector />
         <span className="text-witch-sage-500/50 hidden sm:inline">·</span>
@@ -256,6 +280,7 @@ export function ChatRoom() {
               fadeLevel={getFadeLevel(index, visibleMessages.length)}
               resonance={resonance.get(msg.id) || 0}
               affirmColors={affirmations.get(msg.id) || []}
+              topicSubscriptions={topicSubscriptions}
             />
           ))}
           {leavingMessages.map((msg) => (
@@ -268,6 +293,7 @@ export function ChatRoom() {
               reducedMotion={reducedMotion}
               resonance={resonance.get(msg.id) || 0}
               affirmColors={affirmations.get(msg.id) || []}
+              topicSubscriptions={topicSubscriptions}
             />
           ))}
         </AnimatePresence>
@@ -332,6 +358,7 @@ function StreamMessage({
   fadeLevel = 0,
   resonance = 0,
   affirmColors = [],
+  topicSubscriptions = [],
 }: {
   message: Message;
   onDissipateEnd: () => void;
@@ -341,12 +368,18 @@ function StreamMessage({
   fadeLevel?: number;
   resonance?: number;
   affirmColors?: string[];
+  topicSubscriptions?: string[];
 }) {
   const [relativeTime, setRelativeTime] = useState(() => formatRelativeTime(message.ts));
   // Resonance slows down the dissipation - more copies = slower fade
   const resonanceMultiplier = Math.max(1, 1 + resonance * 0.5);
   const duration = reducedMotion ? 0 : leaving ? 0.5 * resonanceMultiplier : 0.4;
   const isGhost = message.ghost === true;
+
+  // Check if message matches any subscribed topics (keyword match in text)
+  const messageTextLower = message.text.toLowerCase();
+  const isSubscribedTopic = topicSubscriptions.length > 0 &&
+    topicSubscriptions.some(topic => messageTextLower.includes(topic));
 
   // Fade settings based on fadeLevel (0 = fully visible, 1-3 = progressively faded)
   // Ghosts get extra heavy blur
@@ -387,10 +420,17 @@ function StreamMessage({
         if (leaving) onDissipateEnd();
       }}
       onClick={handleClick}
-      className={`glass rounded-xl border ${message.flagged ? "border-rose-600/60 bg-rose-950/20" : "border-witch-plum-900/40"} ${message.whisper ? "px-3 py-2 opacity-75" : "px-4 py-3"} ${isGhost ? "select-none" : "cursor-pointer hover:border-witch-plum-700/60"} relative overflow-hidden`}
+      className={`glass rounded-xl border ${message.flagged ? "border-rose-600/60 bg-rose-950/20" : isSubscribedTopic ? "border-witch-amber-500/60 ring-1 ring-witch-amber-500/30" : "border-witch-plum-900/40"} ${message.whisper ? "px-3 py-2 opacity-75" : "px-4 py-3"} ${isGhost ? "select-none" : "cursor-pointer hover:border-witch-plum-700/60"} relative overflow-hidden`}
       data-message
-      title={isGhost ? "You weren't here for this" : "Tap to affirm"}
+      title={isGhost ? "You weren't here for this" : isSubscribedTopic ? "Matches your subscribed topic" : "Tap to affirm"}
     >
+      {/* Topic subscription glow */}
+      {isSubscribedTopic && (
+        <div
+          className="absolute inset-0 rounded-xl pointer-events-none opacity-20"
+          style={{ background: 'radial-gradient(ellipse at center, var(--witch-amber-500, #f59e0b) 0%, transparent 70%)' }}
+        />
+      )}
       {/* Affirmation pulses */}
       <AnimatePresence>
         {affirmColors.map((color, i) => (
@@ -442,20 +482,25 @@ function StreamMessage({
   );
 }
 
-const SLASH_HELP = `/clear   — clear your stream
-/help    — show this
-/anon    — hide your handle (go anonymous)
-/id      — show your color & handle
-/mood    — show current atmosphere
-/copy    — copy latest message (others see you took a note)
-/whisper — send message in quieter style
-/summon  — gently ping someone (e.g. /summon alice)
-/away    — step away (others see you're gone)
-/back    — return from away
-/shrug   — send ¯\\_(ツ)_/¯
-/flip    — send table flip
-/spark   — clear stream, fresh start
-/ping    — pong (latency)`;
+const SLASH_HELP = `/clear       — clear your stream
+/help        — show this
+/anon        — hide your handle (go anonymous)
+/id          — show your color & handle
+/mood        — show current atmosphere
+/copy        — copy latest message (others see you took a note)
+/whisper     — send message in quieter style
+/summon      — gently ping someone (e.g. /summon alice)
+/away        — step away (others see you're gone)
+/back        — return from away
+/subscribe   — follow a topic (e.g. /subscribe witchcraft)
+/unsub       — unfollow a topic (e.g. /unsub witchcraft)
+/topics      — list your subscribed topics
+/topic-sound — toggle sound for topic matches (on/off)
+/topic-notify— toggle browser notifications (on/off)
+/shrug       — send ¯\\_(ツ)_/¯
+/flip        — send table flip
+/spark       — clear stream, fresh start
+/ping        — pong (latency)`;
 
 const TYPING_DEBOUNCE_MS = 2000;
 
@@ -474,7 +519,7 @@ const MessageInput = React.forwardRef<
 ) {
   const [value, setValue] = useState("");
   const [persistentFeedback, setPersistentFeedback] = useState(false);
-  const { socket, identity, mood } = useSocket();
+  const { socket, identity, mood, topicSubscriptions, subscribeTopic, unsubscribeTopic, topicSoundEnabled, setTopicSoundEnabled, topicNotifyEnabled, setTopicNotifyEnabled } = useSocket();
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showFeedback = (msg: string, persistent = false) => {
@@ -571,6 +616,72 @@ const MessageInput = React.forwardRef<
         }
         setValue("");
         return;
+      case "/subscribe":
+      case "/sub": {
+        const topic = t.slice(cmd.length).trim();
+        if (!topic) {
+          showFeedback("Usage: /subscribe topic");
+        } else {
+          subscribeTopic(topic);
+          showFeedback(`Subscribed to #${topic.replace(/^#/, '')}`);
+        }
+        setValue("");
+        return;
+      }
+      case "/unsubscribe":
+      case "/unsub": {
+        const topic = t.slice(cmd.length).trim();
+        if (!topic) {
+          showFeedback("Usage: /unsub topic");
+        } else {
+          unsubscribeTopic(topic);
+          showFeedback(`Unsubscribed from #${topic.replace(/^#/, '')}`);
+        }
+        setValue("");
+        return;
+      }
+      case "/topics": {
+        if (topicSubscriptions.length === 0) {
+          showFeedback("No topic subscriptions. Use /subscribe topic");
+        } else {
+          showFeedback(`Subscribed: ${topicSubscriptions.map(t => '#' + t).join(', ')}`);
+        }
+        setValue("");
+        return;
+      }
+      case "/topic-sound": {
+        const arg = t.slice(cmd.length).trim().toLowerCase();
+        if (arg === "on") {
+          setTopicSoundEnabled(true);
+          showFeedback("Topic sound enabled");
+        } else if (arg === "off") {
+          setTopicSoundEnabled(false);
+          showFeedback("Topic sound disabled");
+        } else {
+          showFeedback(`Topic sound is ${topicSoundEnabled ? "on" : "off"}. Use /topic-sound on|off`);
+        }
+        setValue("");
+        return;
+      }
+      case "/topic-notify": {
+        const arg = t.slice(cmd.length).trim().toLowerCase();
+        if (arg === "on") {
+          setTopicNotifyEnabled(true).then(granted => {
+            if (granted) {
+              showFeedback("Browser notifications enabled for topics");
+            } else {
+              showFeedback("Browser notification permission denied");
+            }
+          });
+        } else if (arg === "off") {
+          setTopicNotifyEnabled(false);
+          showFeedback("Browser notifications disabled");
+        } else {
+          showFeedback(`Topic notifications are ${topicNotifyEnabled ? "on" : "off"}. Use /topic-notify on|off`);
+        }
+        setValue("");
+        return;
+      }
       case "/shrug":
         onSend("¯\\_(ツ)_/¯");
         setValue("");
