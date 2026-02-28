@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: witchat
+
+resources:
+  - ../../base
+
+# Production patches
+patches:
+  - patch: |-
+      - op: replace
+        path: /spec/config
+        value: prod
+    target:
+      kind: DopplerSecret
+      name: witchat-doppler
+
+# Production image tag
+images:
+  - name: 192.168.1.247:8080/witchat/app
+    newTag: latest
+
+commonLabels:
+  environment: production

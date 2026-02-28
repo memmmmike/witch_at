@@ -1,0 +1,57 @@
+# Dependencies - will be installed fresh in container
+node_modules
+
+# Build artifacts - will be built in container
+.next
+out
+build
+dist
+
+# Environment files - secrets managed by Doppler
+.env
+.env.*
+!.env.local.example
+
+# Git
+.git
+.gitignore
+
+# IDE/Editor
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Development files
+.witchat-dev.lock
+*.log
+npm-debug.log*
+
+# Docker files (don't need themselves in context)
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Kubernetes manifests
+k8s/
+
+# GitHub
+.github/
+
+# Claude
+.claude/
+
+# Documentation
+README.md
+*.md
+
+# Service files (not needed in container)
+*.service
+cloudflare-tunnel.yml

@@ -1,0 +1,46 @@
+# Witchat Docker Compose
+# Local development and testing
+
+services:
+  witchat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SOCKET_URL: http://localhost:4001
+    ports:
+      - "3000:3000"   # Next.js
+      - "4001:4001"   # Socket.io
+    environment:
+      - NODE_ENV=production
+      - SOCKET_PORT=4001
+      - CORS_ORIGIN=http://localhost:3000
+      - ROOM_TITLE=the well
+      - LOG_LEVEL=info
+      # Optional: Redis for persistence
+      # - REDIS_URL=redis://redis:6379
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  # Optional: Redis for message persistence
+  # Uncomment if you want messages to persist across restarts
+  # redis:
+  #   image: redis:7-alpine
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 3
+  #   restart: unless-stopped
+
+# volumes:
+#   redis_data:
