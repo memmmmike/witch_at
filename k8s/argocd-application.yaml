@@ -9,7 +9,7 @@ spec:
   project: default
 
   source:
-    repoURL: https://github.com/memmmmike/witch_at.git
+    repoURL: https://github.com/0ponn/witch_at.git
     targetRevision: main
     path: k8s/base
 
